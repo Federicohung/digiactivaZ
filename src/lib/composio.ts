@@ -291,8 +291,10 @@ export async function executeComposioTool(
     });
     return result;
   } catch (error) {
-    console.error(`[COMPOSIO_TOOL_EXECUTE_ERROR] ${toolSlug}:`, error);
-    throw error;
+    const errMsg = error instanceof Error ? error.message : String(error);
+    const errCause = error instanceof Error && error.cause ? String(error.cause) : '';
+    console.error(`[COMPOSIO_TOOL_EXECUTE_ERROR] ${toolSlug}: ${errMsg}`, errCause);
+    throw new Error(`Error executing ${toolSlug}: ${errMsg} ${errCause}`);
   }
 }
 
