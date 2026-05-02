@@ -28,8 +28,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { toast } from 'sonner'
 import {
   DndContext, DragEndEvent, DragOverlay, DragStartEvent,
-  PointerSensor, useSensor, useSensors, closestCorners,
-  useDroppable
+  PointerSensor, useSensor, useSensors,
+  useDraggable, useDroppable, DragOverlayProps
 } from '@dnd-kit/core'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell } from 'recharts'
 
@@ -264,7 +264,7 @@ function getFuenteIcon(fuente: string) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   DROPPABLE COLUMN (for Pipeline)
+   DND HELPERS (for Pipeline)
    ═══════════════════════════════════════════════════════════════ */
 
 function DroppableColumn({ etapa, children, className }: { etapa: string; children: React.ReactNode; className?: string }) {
@@ -272,8 +272,22 @@ function DroppableColumn({ etapa, children, className }: { etapa: string; childr
   return (
     <div
       ref={setNodeRef}
-      className={`${className || ''} ${isOver ? 'ring-2 ring-sky-300/50 bg-sky-50/30' : ''} transition-colors duration-150`}
+      className={`${className || ''} ${isOver ? 'ring-2 ring-sky-300/50 bg-sky-50/30' : ''} transition-colors duration-150 min-h-[200px]`}
     >
+      {children}
+    </div>
+  )
+}
+
+function DraggableCard({ id, children }: { id: string; children: React.ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id })
+  const style = transform ? {
+    transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
+    zIndex: 50,
+    opacity: isDragging ? 0.5 : 1,
+  } : undefined
+  return (
+    <div ref={setNodeRef} style={style} {...listeners} {...attributes}>
       {children}
     </div>
   )
@@ -710,6 +724,8 @@ function PipelineSection({ token }: { token: string }) {
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
   const [showNewLead, setShowNewLead] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
+  // Track which column the drag is currently over
+  const [overEtapa, setOverEtapa] = useState<string | null>(null)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
@@ -737,14 +753,25 @@ function PipelineSection({ token }: { token: string }) {
     setActiveId(event.active.id as string)
   }
 
+  const handleDragOver = (event: { over: { id: string | number } | null }) => {
+    if (event.over) {
+      const id = String(event.over.id)
+      if (ETAPAS.includes(id as typeof ETAPAS[number])) {
+        setOverEtapa(id)
+      }
+    } else {
+      setOverEtapa(null)
+    }
+  }
+
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event
     setActiveId(null)
+    setOverEtapa(null)
     if (!over) return
 
-    const contactId = active.id as string
-    // over.id now correctly returns the etapa name from the DroppableColumn
-    const targetEtapa = over.id as string
+    const contactId = String(active.id)
+    const targetEtapa = String(over.id)
 
     // Find the contact
     let contact: Contact | null = null
@@ -752,10 +779,11 @@ function PipelineSection({ token }: { token: string }) {
       const found = pipeline[etapa]?.find(c => c.id === contactId)
       if (found) { contact = found; break }
     }
-    if (!contact || contact.etapa === targetEtapa) return
+    if (!contact) return
 
-    // Verify targetEtapa is a valid etapa
+    // Check if target is a valid etapa and different from current
     if (!ETAPAS.includes(targetEtapa as typeof ETAPAS[number])) return
+    if (contact.etapa === targetEtapa) return
 
     // Optimistic update
     setPipeline(prev => {
@@ -816,13 +844,43 @@ function PipelineSection({ token }: { token: string }) {
         </Button>
       </div>
 
-      <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={({ droppableContainers, active }) => {
+          // Custom collision detection: find the droppable column that contains the active draggable
+          // by checking which column's bounding rect contains the pointer position
+          const activeRect = active.rect.current.translated
+          if (!activeRect) return []
+
+          // Find all column droppables and return the one whose rect contains the drag position
+          const collisions: { id: string | number; ratio: number }[] = []
+          for (const container of droppableContainers) {
+            const rect = container.rect.current
+            if (!rect) continue
+            const id = String(container.id)
+            // Only consider etapa columns as drop targets
+            if (!ETAPAS.includes(id as typeof ETAPAS[number])) continue
+
+            // Check if the center of the dragged item is within this column
+            const centerX = activeRect.left + activeRect.width / 2
+            const centerY = activeRect.top + activeRect.height / 2
+
+            if (centerX >= rect.left && centerX <= rect.right && centerY >= rect.top && centerY <= rect.bottom) {
+              collisions.push({ id: container.id, ratio: 1 })
+            }
+          }
+          return collisions
+        }}
+        onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
+        onDragEnd={handleDragEnd}
+      >
         <div className="flex gap-3 overflow-x-auto pb-3" style={{ minHeight: '65vh' }}>
           {ETAPAS.map(etapa => (
             <DroppableColumn
               key={etapa}
               etapa={etapa}
-              className="flex-shrink-0 w-64 bg-gray-50/80 rounded-xl p-2.5"
+              className={`flex-shrink-0 w-64 bg-gray-50/80 rounded-xl p-2.5 ${overEtapa === etapa ? 'ring-2 ring-sky-300/50 bg-sky-50/30' : ''}`}
             >
               <div className="flex items-center gap-1.5 mb-2 px-1">
                 <div className={`w-2 h-2 rounded-full ${ETAPA_DOT_COLORS[etapa]}`} />
@@ -831,33 +889,34 @@ function PipelineSection({ token }: { token: string }) {
               </div>
               <div className="space-y-1.5 min-h-[150px]">
                 {pipeline[etapa]?.map(contact => (
-                  <div
-                    key={contact.id}
-                    className="bg-white rounded-lg p-2.5 border border-gray-100 cursor-grab active:cursor-grabbing hover:border-gray-200 transition-colors"
-                    onClick={() => setSelectedContact(contact)}
-                  >
-                    <div className="flex items-start justify-between mb-1">
-                      <div className="flex items-center gap-1.5">
-                        <p className="text-xs font-medium text-gray-800">{contact.nombre}</p>
-                        <span className={`${FUENTE_COLORS[contact.fuente] || 'text-gray-400'}`}>
-                          {getFuenteIcon(contact.fuente)}
-                        </span>
+                  <DraggableCard key={contact.id} id={contact.id}>
+                    <div
+                      className={`bg-white rounded-lg p-2.5 border border-gray-100 cursor-grab active:cursor-grabbing hover:border-gray-200 transition-colors ${activeId === contact.id ? 'opacity-40' : ''}`}
+                      onClick={() => !activeId && setSelectedContact(contact)}
+                    >
+                      <div className="flex items-start justify-between mb-1">
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-xs font-medium text-gray-800">{contact.nombre}</p>
+                          <span className={`${FUENTE_COLORS[contact.fuente] || 'text-gray-400'}`}>
+                            {getFuenteIcon(contact.fuente)}
+                          </span>
+                        </div>
+                        {contact.scoreIa > 0 && (
+                          <span className={`text-[10px] font-bold px-1 py-0 rounded border ${getScoreBg(contact.scoreIa)} ${getScoreColor(contact.scoreIa)}`}>
+                            {contact.scoreIa}
+                          </span>
+                        )}
                       </div>
-                      {contact.scoreIa > 0 && (
-                        <span className={`text-[10px] font-bold px-1 py-0 rounded border ${getScoreBg(contact.scoreIa)} ${getScoreColor(contact.scoreIa)}`}>
-                          {contact.scoreIa}
-                        </span>
+                      {contact.empresa && (
+                        <p className="text-[10px] text-gray-400 mb-1">{contact.empresa}</p>
                       )}
+                      <div className="flex items-center justify-between">
+                        {contact.valorMensual > 0 && (
+                          <span className="text-[10px] font-medium text-emerald-600">{formatCurrency(contact.valorMensual)}</span>
+                        )}
+                      </div>
                     </div>
-                    {contact.empresa && (
-                      <p className="text-[10px] text-gray-400 mb-1">{contact.empresa}</p>
-                    )}
-                    <div className="flex items-center justify-between">
-                      {contact.valorMensual > 0 && (
-                        <span className="text-[10px] font-medium text-emerald-600">{formatCurrency(contact.valorMensual)}</span>
-                      )}
-                    </div>
-                  </div>
+                  </DraggableCard>
                 ))}
               </div>
             </DroppableColumn>

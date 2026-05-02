@@ -611,6 +611,129 @@ export async function sendComposioMessage(
   }, composioUserId);
 }
 
+// ─── Composio Response Parser ───
+// The Composio API can return data in various nested formats.
+// This helper safely extracts the data array from any response structure.
+
+function extractDataArray(result: unknown, logLabel: string): Record<string, unknown>[] {
+  if (!result) return [];
+  const r = result as Record<string, unknown>;
+
+  // Try common paths: data.data, data, items, results, conversations, messages
+  const paths = [
+    () => (r.data as Record<string, unknown>)?.data,
+    () => r.data,
+    () => r.items,
+    () => r.results,
+    () => r.conversations,
+    () => r.messages,
+    () => r.data && Array.isArray(r.data) ? r.data : null,
+  ];
+
+  for (const getPath of paths) {
+    try {
+      const data = getPath();
+      if (Array.isArray(data)) {
+        console.log(`[COMPOSIO_PARSE] ${logLabel}: found array via path (len=${data.length}), sample keys: ${data.length > 0 ? Object.keys(data[0] || {}).join(',') : 'empty'}`);
+        if (data.length > 0) {
+          console.log(`[COMPOSIO_PARSE] ${logLabel}: first item sample:`, JSON.stringify(data[0]).substring(0, 300));
+        }
+        return data as Record<string, unknown>[];
+      }
+      // If data is an object with nested arrays, check common keys
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        for (const key of ['data', 'items', 'conversations', 'messages', 'results']) {
+          if (Array.isArray((data as Record<string, unknown>)[key])) {
+            const arr = (data as Record<string, unknown>)[key] as Record<string, unknown>[];
+            console.log(`[COMPOSIO_PARSE] ${logLabel}: found nested array at .${key} (len=${arr.length})`);
+            if (arr.length > 0) {
+              console.log(`[COMPOSIO_PARSE] ${logLabel}: first item sample:`, JSON.stringify(arr[0]).substring(0, 300));
+            }
+            return arr;
+          }
+        }
+      }
+    } catch { /* continue */ }
+  }
+
+  console.log(`[COMPOSIO_PARSE] ${logLabel}: could not extract array from response. Keys: ${Object.keys(r).join(',')}`);
+  console.log(`[COMPOSIO_PARSE] ${logLabel}: raw response sample:`, JSON.stringify(r).substring(0, 500));
+  return [];
+}
+
+/**
+ * Extract sender info from a message object.
+ * Composio returns different formats for Facebook vs Instagram messages.
+ * We try multiple paths to find the sender's ID and name.
+ */
+function extractSenderInfo(msg: Record<string, unknown>, channel: 'messenger' | 'instagram'): { senderId: string; senderName: string } {
+  // Try various paths for sender info
+  const from = msg.from as Record<string, unknown> | undefined;
+  const sender = msg.sender as Record<string, unknown> | undefined;
+  const senderId = msg.sender_id as string | undefined;
+  const participantIds = msg.participant_ids as string[] | undefined;
+
+  let id = '';
+  let name = '';
+
+  // Path 1: msg.from.id / msg.from.name (standard FB format)
+  if (from?.id) { id = String(from.id); name = String(from.name || from.username || ''); }
+  // Path 2: msg.sender.id / msg.sender.name
+  if (!id && sender?.id) { id = String(sender.id); name = String(sender.name || sender.username || ''); }
+  // Path 3: msg.sender_id / msg.sender_name
+  if (!id && senderId) { id = String(senderId); name = String((msg as Record<string, unknown>).sender_name || (msg as Record<string, unknown>).sender_username || ''); }
+  // Path 4: msg.user_id / msg.user_name
+  if (!id && msg.user_id) { id = String(msg.user_id); name = String(msg.user_name || msg.username || ''); }
+  // Path 5: msg.participant_ids (Instagram sometimes uses this)
+  if (!id && participantIds && participantIds.length > 0) { id = String(participantIds[0]); }
+  // Path 6: msg.from_id / msg.from_name
+  if (!id && msg.from_id) { id = String(msg.from_id); name = String(msg.from_name || ''); }
+  // Path 7: msg.participants (array of objects)
+  if (!id) {
+    const participants = msg.participants as Array<Record<string, unknown>> | undefined;
+    if (participants && participants.length > 0) {
+      // Pick the participant that is NOT the page
+      const nonPageParticipant = participants.find(p => !p.is_page && !p.is_owner);
+      const p = nonPageParticipant || participants[0];
+      id = String(p.id || p.user_id || '');
+      name = String(p.name || p.username || p.ig_username || '');
+    }
+  }
+
+  // For Instagram: the conversation may contain the participant username
+  if (channel === 'instagram' && !name && id) {
+    // Try to get username from msg.snippet or other fields
+    name = String(msg.snippet_sender || msg.ig_username || msg.username || '');
+  }
+
+  // Fallback name
+  if (!name) {
+    name = id ? `Contacto ${channel} ${id.substring(0, 8)}` : 'Desconocido';
+  }
+
+  console.log(`[COMPOSIO_PARSE] extractSenderInfo (${channel}): id=${id}, name=${name}, msgKeys=${Object.keys(msg).join(',')}`);
+  return { senderId: id, senderName: name };
+}
+
+/**
+ * Extract message content from various Composio response formats.
+ */
+function extractMessageContent(msg: Record<string, unknown>): string {
+  const content =
+    msg.message || msg.text || msg.content || msg.body ||
+    msg.snippet || msg.message_text || msg.text_message ||
+    (msg.attachments ? `[Archivo adjunto]` : '') ||
+    '';
+  return String(content);
+}
+
+/**
+ * Extract message ID for deduplication.
+ */
+function extractMessageId(msg: Record<string, unknown>): string {
+  return String(msg.id || msg.message_id || msg.mid || msg.uid || '');
+}
+
 // ─── Polling for New Messages ───
 
 export async function pollNewMessages(
@@ -633,50 +756,66 @@ export async function pollNewMessages(
   try {
     if (channel === 'messenger') {
       // Step 1: List managed pages
+      console.log(`[COMPOSIO_POLL] Messenger: listing pages for account ${connectedAccountId}`);
       const pagesResult = await executeComposioTool(FACEBOOK_TOOLS.LIST_PAGES, connectedAccountId, {}, composioUserId);
-      const pages = pagesResult?.data?.data || [];
+      console.log(`[COMPOSIO_POLL] Messenger: pagesResult keys=${Object.keys(pagesResult || {}).join(',')}`);
+      const pages = extractDataArray(pagesResult, 'FB_PAGES');
 
       // Save the first page name to the connection for display in the inbox
-      if (pages.length > 0 && pages[0].name) {
-        try {
-          await upsertComposioConnection(workspaceId, userId, 'facebook', {
-            connected: true,
-            accountId: connectedAccountId,
-            accountName: pages[0].name as string,
-            metadata: {
-              pageName: pages[0].name,
-              pageId: pages[0].id,
-              source: 'poll',
-            },
-          });
-        } catch { /* silent */ }
+      if (pages.length > 0) {
+        const pageName = String(pages[0].name || pages[0].page_name || '');
+        const pageId = String(pages[0].id || pages[0].page_id || '');
+        if (pageName) {
+          try {
+            await upsertComposioConnection(workspaceId, userId, 'facebook', {
+              connected: true,
+              accountId: connectedAccountId,
+              accountName: pageName,
+              metadata: {
+                pageName,
+                pageId,
+                source: 'poll',
+              },
+            });
+            console.log(`[COMPOSIO_POLL] Saved Facebook page name: ${pageName}`);
+          } catch (e) { console.warn('[COMPOSIO_POLL] Could not save page name:', e); }
+        }
       }
 
       for (const page of pages) {
+        const pageId = String(page.id || page.page_id || '');
+        console.log(`[COMPOSIO_POLL] Messenger: getting conversations for page ${pageId}`);
+
         // Step 2: Get conversations for this page
         const convosResult = await executeComposioTool(FACEBOOK_TOOLS.GET_CONVERSATIONS, connectedAccountId, {
-          page_id: page.id,
+          page_id: pageId,
         }, composioUserId);
-        const conversations = convosResult?.data?.data || [];
+        const conversations = extractDataArray(convosResult, `FB_CONVOS_page${pageId}`);
 
         for (const convo of conversations.slice(0, 10)) {
+          const convoId = String(convo.id || convo.conversation_id || '');
+          console.log(`[COMPOSIO_POLL] Messenger: getting messages for convo ${convoId}`);
+
           // Step 3: Get messages for this conversation
           const msgsResult = await executeComposioTool(FACEBOOK_TOOLS.GET_MESSAGES, connectedAccountId, {
-            conversation_id: convo.id,
+            conversation_id: convoId,
           }, composioUserId);
-          const messages = msgsResult?.data?.data || [];
+          const messages = extractDataArray(msgsResult, `FB_MSGS_convo${convoId}`);
 
           for (const msg of messages.slice(-5)) {
-            const senderId = msg.from?.id || '';
-            const senderName = msg.from?.name || 'Desconocido';
-            const content = msg.message || '';
+            const { senderId, senderName } = extractSenderInfo(msg, 'messenger');
+            const content = extractMessageContent(msg);
+            const msgId = extractMessageId(msg);
 
-            if (!senderId || !content) continue;
+            if (!senderId || !content || !msgId) {
+              console.log(`[COMPOSIO_POLL] Messenger: skipping msg (senderId=${senderId}, content=${content?.substring(0, 30)}, msgId=${msgId})`);
+              continue;
+            }
 
             const existing = await db.message.findFirst({
               where: {
                 workspaceId,
-                metadata: { path: ['composioMessageId'], equals: msg.id },
+                metadata: { path: ['composioMessageId'], equals: msgId },
               },
             });
 
@@ -690,15 +829,15 @@ export async function pollNewMessages(
                 workspaceId,
                 contactId: contact.id,
                 channel: 'messenger',
-                direction: msg.from?.id === page.id ? 'outbound' : 'inbound',
+                direction: senderId === pageId ? 'outbound' : 'inbound',
                 content,
                 conversationId: conversation.id,
                 metadata: {
-                  composioMessageId: msg.id,
+                  composioMessageId: msgId,
                   senderId,
                   senderName,
                   source: 'composio_poll',
-                  pageId: page.id,
+                  pageId,
                   connectedAccountId,
                 },
                 status: 'delivered',
@@ -709,8 +848,8 @@ export async function pollNewMessages(
               where: { id: conversation.id },
               data: {
                 lastMessagePreview: content.substring(0, 100),
-                lastMessageAt: new Date(msg.created_time || Date.now()),
-                ...(msg.from?.id !== page.id ? { unreadCount: { increment: 1 } } : {}),
+                lastMessageAt: new Date((msg.created_time as string) || (msg.created_at as string) || Date.now()),
+                ...(senderId !== pageId ? { unreadCount: { increment: 1 } } : {}),
               },
             });
 
@@ -719,43 +858,84 @@ export async function pollNewMessages(
         }
       }
     } else if (channel === 'instagram') {
+      console.log(`[COMPOSIO_POLL] Instagram: listing conversations for account ${connectedAccountId}`);
       const convosResult = await executeComposioTool(INSTAGRAM_TOOLS.LIST_CONVERSATIONS, connectedAccountId, {}, composioUserId);
-      const conversations = convosResult?.data?.data || [];
+      console.log(`[COMPOSIO_POLL] Instagram: convosResult keys=${Object.keys(convosResult || {}).join(',')}`);
+      const conversations = extractDataArray(convosResult, 'IG_CONVOS');
 
       // Try to get the Instagram profile name for display in the inbox
       try {
+        console.log(`[COMPOSIO_POLL] Instagram: fetching profile name`);
         const profileResult = await executeComposioTool(INSTAGRAM_TOOLS.GET_MESSENGER_PROFILE, connectedAccountId, {}, composioUserId);
-        const profileName = profileResult?.data?.name || profileResult?.data?.data?.name;
+        const profileData = profileResult as Record<string, unknown>;
+        const profileName =
+          (profileData?.data as Record<string, unknown>)?.name ||
+          (profileData?.data as Record<string, unknown>)?.data && ((profileData.data as Record<string, unknown>).data as Record<string, unknown>)?.name ||
+          profileData?.name ||
+          '';
         if (profileName) {
           await upsertComposioConnection(workspaceId, userId, 'instagram', {
             connected: true,
             accountId: connectedAccountId,
-            accountName: profileName as string,
+            accountName: String(profileName),
             metadata: {
-              pageName: profileName,
+              pageName: String(profileName),
               source: 'poll',
             },
           });
+          console.log(`[COMPOSIO_POLL] Saved Instagram profile name: ${profileName}`);
         }
-      } catch { /* silent - profile fetch may fail */ }
+      } catch (e) { console.warn('[COMPOSIO_POLL] Instagram profile fetch failed:', (e as Error).message); }
 
       for (const convo of conversations.slice(0, 10)) {
+        const convoId = String(convo.id || convo.conversation_id || convo.thread_id || '');
+        console.log(`[COMPOSIO_POLL] Instagram: getting messages for convo ${convoId}, keys=${Object.keys(convo).join(',')}`);
+
+        // Log the conversation object to understand participant info
+        console.log(`[COMPOSIO_POLL] Instagram: convo sample:`, JSON.stringify(convo).substring(0, 400));
+
+        // Try to extract participant info from the conversation object itself
+        // Instagram conversations often have participants at the conversation level
+        const participants = convo.participants as Array<Record<string, unknown>> | undefined;
+        const participantInfo: Record<string, { name: string; username: string }> = {};
+        if (participants) {
+          for (const p of participants) {
+            const pid = String(p.id || p.igid || p.user_id || '');
+            if (pid) {
+              participantInfo[pid] = {
+                name: String(p.name || p.username || p.ig_username || p.full_name || ''),
+                username: String(p.username || p.ig_username || ''),
+              };
+            }
+          }
+          console.log(`[COMPOSIO_POLL] Instagram: extracted ${Object.keys(participantInfo).length} participants from convo`);
+        }
+
         const msgsResult = await executeComposioTool(INSTAGRAM_TOOLS.LIST_MESSAGES, connectedAccountId, {
-          conversation_id: convo.id,
+          conversation_id: convoId,
         }, composioUserId);
-        const messages = msgsResult?.data?.data || [];
+        const messages = extractDataArray(msgsResult, `IG_MSGS_convo${convoId}`);
 
         for (const msg of messages.slice(-5)) {
-          const senderId = msg.from?.id || '';
-          const senderName = msg.from?.name || 'Desconocido';
-          const content = msg.message || '';
+          let { senderId, senderName } = extractSenderInfo(msg, 'instagram');
 
-          if (!senderId || !content) continue;
+          // If sender name is generic, try to get it from the conversation participants
+          if (senderName.startsWith('Contacto instagram') && participantInfo[senderId]) {
+            senderName = participantInfo[senderId].name || participantInfo[senderId].username || senderName;
+          }
+
+          const content = extractMessageContent(msg);
+          const msgId = extractMessageId(msg);
+
+          if (!senderId || !content || !msgId) {
+            console.log(`[COMPOSIO_POLL] Instagram: skipping msg (senderId=${senderId}, content=${content?.substring(0, 30)}, msgId=${msgId})`);
+            continue;
+          }
 
           const existing = await db.message.findFirst({
             where: {
               workspaceId,
-              metadata: { path: ['composioMessageId'], equals: msg.id },
+              metadata: { path: ['composioMessageId'], equals: msgId },
             },
           });
 
@@ -773,11 +953,11 @@ export async function pollNewMessages(
               content,
               conversationId: conversation.id,
               metadata: {
-                composioMessageId: msg.id,
+                composioMessageId: msgId,
                 senderId,
                 senderName,
                 source: 'composio_poll',
-                conversationId: convo.id,
+                conversationId: convoId,
                 connectedAccountId,
               },
               status: 'delivered',
@@ -788,7 +968,7 @@ export async function pollNewMessages(
             where: { id: conversation.id },
             data: {
               lastMessagePreview: content.substring(0, 100),
-              lastMessageAt: new Date(msg.created_time || Date.now()),
+              lastMessageAt: new Date((msg.created_time as string) || (msg.created_at as string) || (msg.timestamp as string) || Date.now()),
               unreadCount: { increment: 1 },
             },
           });
@@ -800,6 +980,8 @@ export async function pollNewMessages(
 
     if (newMessages > 0) {
       console.log(`[COMPOSIO_POLL] Synced ${newMessages} new ${channel} messages for workspace ${workspaceId}`);
+    } else {
+      console.log(`[COMPOSIO_POLL] No new ${channel} messages for workspace ${workspaceId}`);
     }
   } catch (error) {
     console.error(`[COMPOSIO_POLL_ERROR] channel=${channel}:`, error);
@@ -863,7 +1045,20 @@ export async function findOrCreateContact(
     },
   });
 
-  if (existing) return existing;
+  if (existing) {
+    // Update name if we have a better one now
+    if (name && name !== 'Desconocido' && !name.startsWith('Contacto ') && existing.nombre !== name) {
+      try {
+        return await db.contact.update({
+          where: { id: existing.id },
+          data: { nombre: name },
+        });
+      } catch { /* silent */ }
+    }
+    return existing;
+  }
+
+  console.log(`[COMPOSIO_CONTACT] Creating new ${channel} contact: name="${name}", externalId=${externalId}`);
 
   return db.contact.create({
     data: {
