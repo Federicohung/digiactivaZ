@@ -53,15 +53,31 @@ export async function initiateOAuth(
   const composio = getComposio();
   const composioUserId = getComposioUserId(workspaceId, userId);
 
-  console.log(`[COMPOSIO_OAUTH] Initiating for ${toolkit}, userId=${composioUserId}`);
+  console.log(`[COMPOSIO_OAUTH] Initiating for ${toolkit}, userId=${composioUserId}, apiKey=${process.env.COMPOSIO_API_KEY ? '(set)' : '(NOT SET)'}`);
 
   // Use toolkits.authorize() — the v0.8.1 way to start OAuth
-  const connectionRequest = await composio.toolkits.authorize(composioUserId, toolkit);
+  let connectionRequest;
+  try {
+    connectionRequest = await composio.toolkits.authorize(composioUserId, toolkit);
+    console.log(`[COMPOSIO_OAUTH] Authorize response for ${toolkit}:`, JSON.stringify({
+      id: connectionRequest.id,
+      redirectUrl: connectionRequest.redirectUrl?.substring(0, 100),
+      status: connectionRequest.status,
+    }));
+  } catch (authError) {
+    console.error(`[COMPOSIO_OAUTH] Authorize failed for ${toolkit}:`, (authError as Error).message);
+    console.error(`[COMPOSIO_OAUTH] Full error:`, authError);
+    throw authError;
+  }
 
   const redirectUrl = connectionRequest.redirectUrl || '';
   const connectedAccountId = connectionRequest.id || '';
 
   console.log(`[COMPOSIO_OAUTH] Initiated for ${toolkit}, redirectUrl=${redirectUrl?.substring(0, 100)}..., connectedAccountId=${connectedAccountId}`);
+
+  if (!redirectUrl) {
+    console.warn(`[COMPOSIO_OAUTH] WARNING: No redirectUrl returned for ${toolkit}. The OAuth flow may not work.`);
+  }
 
   // Store the pending connection in our database so the callback can identify it
   try {
@@ -94,6 +110,8 @@ export async function checkIntegrationStatus(
   userId: string,
   toolkit: ComposioToolkit
 ): Promise<{ connected: boolean; toolkit: string; connectedAccountId?: string; accountName?: string }> {
+  console.log(`[COMPOSIO_STATUS_CHECK] Starting check for ${toolkit}, workspace=${workspaceId}, user=${userId}`);
+
   // First check our database — this is fast and works even if Composio API is slow
   const dbConnection = await db.composioConnection.findUnique({
     where: {
@@ -104,6 +122,8 @@ export async function checkIntegrationStatus(
     },
   }).catch(() => null);
 
+  console.log(`[COMPOSIO_STATUS_CHECK] DB connection found: ${!!dbConnection}, connected=${dbConnection?.connected}, accountId=${dbConnection?.accountId}`);
+
   try {
     const composio = getComposio();
     const composioUserId = getComposioUserId(workspaceId, userId);
@@ -111,12 +131,14 @@ export async function checkIntegrationStatus(
     // Try listing accounts for this specific user first
     let items: Array<Record<string, unknown>> = [];
     try {
+      console.log(`[COMPOSIO_STATUS_CHECK] Listing accounts for userId=${composioUserId}, toolkit=${toolkit}`);
       const accountsResult = await composio.connectedAccounts.list({
         userIds: [composioUserId],
         toolkitSlugs: [toolkit],
         statuses: ['ACTIVE'],
       });
       items = (accountsResult as Record<string, unknown>)?.items as Array<Record<string, unknown>> || [];
+      console.log(`[COMPOSIO_STATUS_CHECK] Found ${items.length} accounts for specific user`);
     } catch (apiError) {
       console.warn('[COMPOSIO_STATUS_CHECK] API list failed for specific user:', (apiError as Error).message);
     }
@@ -127,28 +149,88 @@ export async function checkIntegrationStatus(
     // (in case the user connected from a different userId in Composio)
     if (!activeAccount) {
       try {
+        console.log(`[COMPOSIO_STATUS_CHECK] No account for specific user, listing ALL active ${toolkit} accounts`);
         const allAccountsResult = await composio.connectedAccounts.list({
           toolkitSlugs: [toolkit],
           statuses: ['ACTIVE'],
         });
         const allItems = (allAccountsResult as Record<string, unknown>)?.items as Array<Record<string, unknown>> || [];
+        console.log(`[COMPOSIO_STATUS_CHECK] Found ${allItems.length} total active ${toolkit} accounts`);
         if (allItems.length > 0) {
           activeAccount = allItems[0];
+          console.log(`[COMPOSIO_STATUS_CHECK] Using first active account: id=${activeAccount.id}, status=${activeAccount.status}`);
         }
       } catch (fallbackError) {
         console.warn('[COMPOSIO_STATUS_CHECK] Fallback list also failed:', (fallbackError as Error).message);
       }
     }
 
+    // For Facebook: also try listing ALL active accounts without any filter as a broader fallback
+    if (!activeAccount && toolkit === 'facebook') {
+      try {
+        console.log(`[COMPOSIO_STATUS_CHECK] Facebook: attempting broadest fallback - listing ALL active accounts`);
+        const broadResult = await composio.connectedAccounts.list({
+          statuses: ['ACTIVE'],
+        });
+        const broadItems = (broadResult as Record<string, unknown>)?.items as Array<Record<string, unknown>> || [];
+        const fbMatch = broadItems.find((a) => {
+          const slug = String(a.toolkitSlug || a.toolkit_slug || a.integrationId || '');
+          return slug.includes('facebook') || slug.includes('FACEBOOK');
+        });
+        if (fbMatch) {
+          activeAccount = fbMatch;
+          console.log(`[COMPOSIO_STATUS_CHECK] Facebook: found via broad fallback, id=${fbMatch.id}`);
+        } else {
+          console.log(`[COMPOSIO_STATUS_CHECK] Facebook: no match in ${broadItems.length} broad accounts`);
+        }
+      } catch (broadError) {
+        console.warn('[COMPOSIO_STATUS_CHECK] Broad fallback failed:', (broadError as Error).message);
+      }
+    }
+
     if (activeAccount) {
       const accountId = String(activeAccount.id || '');
       const metaObj = (activeAccount.meta || activeAccount.metadata || {}) as Record<string, unknown>;
-      const accountName = String(
+      let accountName = String(
         activeAccount.wordId || activeAccount.alias || metaObj.name || ''
       );
 
-      // Update our DB if needed
-      if (!dbConnection?.connected || dbConnection.accountId !== accountId) {
+      console.log(`[COMPOSIO_STATUS_CHECK] Active account found: id=${accountId}, name=${accountName || '(empty)'}`);
+
+      // For Facebook: try to immediately fetch the page name using LIST_MANAGED_PAGES
+      if (toolkit === 'facebook' && accountId) {
+        try {
+          console.log(`[COMPOSIO_STATUS_CHECK] Facebook: fetching page name via FACEBOOK_LIST_MANAGED_PAGES`);
+          const pagesResult = await executeComposioTool(FACEBOOK_TOOLS.LIST_PAGES, accountId, {}, composioUserId);
+          const pages = pagesResult?.data?.data || [];
+          if (pages.length > 0 && pages[0].name) {
+            accountName = pages[0].name as string;
+            console.log(`[COMPOSIO_STATUS_CHECK] Facebook: got page name = ${accountName}`);
+          } else {
+            console.log(`[COMPOSIO_STATUS_CHECK] Facebook: no pages returned or no name field`);
+          }
+        } catch (pageError) {
+          console.warn(`[COMPOSIO_STATUS_CHECK] Facebook: could not fetch page name:`, (pageError as Error).message);
+        }
+      }
+
+      // For Instagram: try to get the profile name
+      if (toolkit === 'instagram' && accountId && !accountName) {
+        try {
+          console.log(`[COMPOSIO_STATUS_CHECK] Instagram: fetching profile name`);
+          const profileResult = await executeComposioTool(INSTAGRAM_TOOLS.GET_MESSENGER_PROFILE, accountId, {}, composioUserId);
+          const profileName = profileResult?.data?.name || profileResult?.data?.data?.name;
+          if (profileName) {
+            accountName = String(profileName);
+            console.log(`[COMPOSIO_STATUS_CHECK] Instagram: got profile name = ${accountName}`);
+          }
+        } catch (profileError) {
+          console.warn(`[COMPOSIO_STATUS_CHECK] Instagram: could not fetch profile name:`, (profileError as Error).message);
+        }
+      }
+
+      // Update our DB if needed (or if we got a new accountName from the API)
+      if (!dbConnection?.connected || dbConnection.accountId !== accountId || (accountName && !dbConnection.accountName)) {
         try {
           await upsertComposioConnection(workspaceId, userId, toolkit, {
             connected: true,
@@ -160,11 +242,33 @@ export async function checkIntegrationStatus(
               connectedAt: new Date().toISOString(),
               connectedAccountId: accountId,
               source: 'status_check',
+              ...(accountName ? { pageName: accountName } : {}),
             },
           });
-          console.log(`[COMPOSIO_STATUS_CHECK] Updated DB: ${toolkit} connected, accountId=${accountId}`);
+          console.log(`[COMPOSIO_STATUS_CHECK] Updated DB: ${toolkit} connected, accountId=${accountId}, name=${accountName}`);
         } catch (dbErr) {
           console.warn('[COMPOSIO_STATUS_CHECK] Could not update DB:', dbErr);
+        }
+      }
+
+      // Fallback: if Composio API says connected but our DB doesn't, update DB
+      if (dbConnection && !dbConnection.connected && activeAccount) {
+        try {
+          await upsertComposioConnection(workspaceId, userId, toolkit, {
+            connected: true,
+            accountId,
+            accountName: accountName || undefined,
+            metadata: {
+              ...(dbConnection?.metadata as Record<string, unknown> || {}),
+              status: 'active',
+              connectedAt: new Date().toISOString(),
+              connectedAccountId: accountId,
+              source: 'status_check_fallback',
+            },
+          });
+          console.log(`[COMPOSIO_STATUS_CHECK] Fallback DB update: ${toolkit} was not marked connected, now fixed`);
+        } catch (dbErr) {
+          console.warn('[COMPOSIO_STATUS_CHECK] Fallback DB update failed:', dbErr);
         }
       }
 
@@ -179,6 +283,7 @@ export async function checkIntegrationStatus(
     // No active connection found via Composio API
     // Check our DB in case it was marked connected by the callback
     if (dbConnection?.connected) {
+      console.log(`[COMPOSIO_STATUS_CHECK] No Composio API match, but DB says connected for ${toolkit}`);
       return {
         connected: true,
         toolkit,
@@ -187,12 +292,14 @@ export async function checkIntegrationStatus(
       };
     }
 
+    console.log(`[COMPOSIO_STATUS_CHECK] ${toolkit} is NOT connected`);
     return { connected: false, toolkit };
   } catch (error) {
     console.error('[COMPOSIO_STATUS_CHECK_ERROR]', error);
 
     // Even on error, check DB as last resort
     if (dbConnection?.connected) {
+      console.log(`[COMPOSIO_STATUS_CHECK] Error but DB says connected for ${toolkit}`);
       return {
         connected: true,
         toolkit,
