@@ -42,6 +42,8 @@ export function getComposioUserId(workspaceId: string, userId: string): string {
 /**
  * Initiate OAuth flow for a toolkit (Facebook or Instagram).
  * Uses composio.toolkits.authorize() which returns a redirectUrl.
+ * After the user authorizes, Composio reports the connection as ACTIVE.
+ * Our status check polls Composio's API to detect the change.
  */
 export async function initiateOAuth(
   workspaceId: string,
@@ -51,73 +53,151 @@ export async function initiateOAuth(
   const composio = getComposio();
   const composioUserId = getComposioUserId(workspaceId, userId);
 
+  console.log(`[COMPOSIO_OAUTH] Initiating for ${toolkit}, userId=${composioUserId}`);
+
   // Use toolkits.authorize() — the v0.8.1 way to start OAuth
   const connectionRequest = await composio.toolkits.authorize(composioUserId, toolkit);
 
   const redirectUrl = connectionRequest.redirectUrl || '';
   const connectedAccountId = connectionRequest.id || '';
 
-  console.log(`[COMPOSIO_OAUTH] Initiated for ${toolkit}, userId=${composioUserId}, redirectUrl=${redirectUrl?.substring(0, 50)}..., connectedAccountId=${connectedAccountId}`);
+  console.log(`[COMPOSIO_OAUTH] Initiated for ${toolkit}, redirectUrl=${redirectUrl?.substring(0, 100)}..., connectedAccountId=${connectedAccountId}`);
+
+  // Store the pending connection in our database so the callback can identify it
+  try {
+    await upsertComposioConnection(workspaceId, userId, toolkit, {
+      connected: false,
+      metadata: {
+        connectedAccountId,
+        composioUserId,
+        status: 'pending',
+        initiatedAt: new Date().toISOString(),
+      },
+    });
+    console.log(`[COMPOSIO_OAUTH] Saved pending connection for ${toolkit}, accountId=${connectedAccountId}`);
+  } catch (dbError) {
+    console.warn('[COMPOSIO_OAUTH] Could not save pending connection to DB:', dbError);
+  }
 
   return { redirectUrl, connectedAccountId };
 }
 
 /**
  * Check if a toolkit is connected for a given workspace/user.
- * Uses composio.connectedAccounts.list() to find ACTIVE connections.
+ * First checks our database for a known connection, then verifies via Composio API.
+ * Also checks if ANY active Composio connection exists for the toolkit
+ * (in case the userId doesn't match exactly — happens when user connects
+ * from a different Composio user ID or the callback wasn't received).
  */
 export async function checkIntegrationStatus(
   workspaceId: string,
   userId: string,
   toolkit: ComposioToolkit
 ): Promise<{ connected: boolean; toolkit: string; connectedAccountId?: string; accountName?: string }> {
+  // First check our database — this is fast and works even if Composio API is slow
+  const dbConnection = await db.composioConnection.findUnique({
+    where: {
+      workspaceId_toolkit: {
+        workspaceId,
+        toolkit,
+      },
+    },
+  }).catch(() => null);
+
   try {
     const composio = getComposio();
     const composioUserId = getComposioUserId(workspaceId, userId);
 
-    // List connected accounts for this user and toolkit with ACTIVE status
-    const accountsResult = await composio.connectedAccounts.list({
-      userIds: [composioUserId],
-      toolkitSlugs: [toolkit],
-      statuses: ['ACTIVE'],
-    });
+    // Try listing accounts for this specific user first
+    let items: Array<Record<string, unknown>> = [];
+    try {
+      const accountsResult = await composio.connectedAccounts.list({
+        userIds: [composioUserId],
+        toolkitSlugs: [toolkit],
+        statuses: ['ACTIVE'],
+      });
+      items = (accountsResult as Record<string, unknown>)?.items as Array<Record<string, unknown>> || [];
+    } catch (apiError) {
+      console.warn('[COMPOSIO_STATUS_CHECK] API list failed for specific user:', (apiError as Error).message);
+    }
 
-    const items = accountsResult.items || [];
-    const activeAccount = items.find((a: { status: string; toolkit: { slug: string } }) => a.status === 'ACTIVE');
+    let activeAccount = items.find((a) => a.status === 'ACTIVE');
+
+    // If no active accounts for this specific user, check ALL accounts for the toolkit
+    // (in case the user connected from a different userId in Composio)
+    if (!activeAccount) {
+      try {
+        const allAccountsResult = await composio.connectedAccounts.list({
+          toolkitSlugs: [toolkit],
+          statuses: ['ACTIVE'],
+        });
+        const allItems = (allAccountsResult as Record<string, unknown>)?.items as Array<Record<string, unknown>> || [];
+        if (allItems.length > 0) {
+          activeAccount = allItems[0];
+        }
+      } catch (fallbackError) {
+        console.warn('[COMPOSIO_STATUS_CHECK] Fallback list also failed:', (fallbackError as Error).message);
+      }
+    }
 
     if (activeAccount) {
+      const accountId = String(activeAccount.id || '');
+      const accountName = String(activeAccount.wordId || activeAccount.alias || '');
+
+      // Update our DB if needed
+      if (!dbConnection?.connected || dbConnection.accountId !== accountId) {
+        try {
+          await upsertComposioConnection(workspaceId, userId, toolkit, {
+            connected: true,
+            accountId,
+            accountName: accountName || undefined,
+            metadata: {
+              ...(dbConnection?.metadata as Record<string, unknown> || {}),
+              status: 'active',
+              connectedAt: new Date().toISOString(),
+              connectedAccountId: accountId,
+              source: 'status_check',
+            },
+          });
+          console.log(`[COMPOSIO_STATUS_CHECK] Updated DB: ${toolkit} connected, accountId=${accountId}`);
+        } catch (dbErr) {
+          console.warn('[COMPOSIO_STATUS_CHECK] Could not update DB:', dbErr);
+        }
+      }
+
       return {
         connected: true,
         toolkit,
-        connectedAccountId: activeAccount.id,
-        accountName: activeAccount.wordId || activeAccount.alias || undefined,
+        connectedAccountId: accountId,
+        accountName: accountName || undefined,
       };
     }
 
-    // If no active accounts for this specific user, check all accounts for the toolkit
-    // (in case the user connected from a different userId in Composio)
-    const allAccountsResult = await composio.connectedAccounts.list({
-      toolkitSlugs: [toolkit],
-      statuses: ['ACTIVE'],
-    });
-
-    const allItems = allAccountsResult.items || [];
-    const anyActive = allItems.length > 0;
-
-    if (anyActive) {
-      // Found an active connection but not under this userId — return first active
-      const firstActive = allItems[0];
+    // No active connection found via Composio API
+    // Check our DB in case it was marked connected by the callback
+    if (dbConnection?.connected) {
       return {
         connected: true,
         toolkit,
-        connectedAccountId: firstActive.id,
-        accountName: firstActive.wordId || firstActive.alias || undefined,
+        connectedAccountId: dbConnection.accountId || undefined,
+        accountName: dbConnection.accountName || undefined,
       };
     }
 
     return { connected: false, toolkit };
   } catch (error) {
     console.error('[COMPOSIO_STATUS_CHECK_ERROR]', error);
+
+    // Even on error, check DB as last resort
+    if (dbConnection?.connected) {
+      return {
+        connected: true,
+        toolkit,
+        connectedAccountId: dbConnection.accountId || undefined,
+        accountName: dbConnection.accountName || undefined,
+      };
+    }
+
     return { connected: false, toolkit };
   }
 }
@@ -141,11 +221,11 @@ export async function getConnectedAccountId(
       statuses: ['ACTIVE'],
     });
 
-    const items = accountsResult.items || [];
-    const activeAccount = items.find((a: { status: string }) => a.status === 'ACTIVE');
+    const items = (accountsResult as Record<string, unknown>)?.items as Array<Record<string, unknown>> || [];
+    const activeAccount = items.find((a) => a.status === 'ACTIVE');
 
     if (activeAccount) {
-      return activeAccount.id;
+      return String(activeAccount.id);
     }
 
     // Fallback: find any active account for this toolkit
@@ -154,9 +234,9 @@ export async function getConnectedAccountId(
       statuses: ['ACTIVE'],
     });
 
-    const allItems = allAccountsResult.items || [];
+    const allItems = (allAccountsResult as Record<string, unknown>)?.items as Array<Record<string, unknown>> || [];
     if (allItems.length > 0) {
-      return allItems[0].id;
+      return String(allItems[0].id);
     }
 
     return null;

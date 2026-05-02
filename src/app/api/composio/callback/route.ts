@@ -1,20 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { upsertComposioConnection, setupTriggersForToolkit, checkIntegrationStatus } from '@/lib/composio';
+import { upsertComposioConnection, checkIntegrationStatus } from '@/lib/composio';
 import type { ComposioToolkit } from '@/lib/composio';
 
 // GET /api/composio/callback
 // This is the OAuth callback URL that Composio redirects to after
 // the user authorizes Facebook or Instagram.
-// Composio sends: ?connectedAccountId=xxx&toolkit=facebook&status=ACTIVE
-// We update our DB, set up triggers, and redirect to the CRM dashboard.
+// Composio may send: ?connectedAccountId=xxx&toolkit=facebook&status=ACTIVE
+// Or it may redirect here without those params — in that case we try to
+// find the pending connection and verify via the Composio API.
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
 
   const connectedAccountId = searchParams.get('connectedAccountId');
   const toolkit = searchParams.get('toolkit') as ComposioToolkit | null;
   const status = searchParams.get('status');
-  const state = searchParams.get('state'); // May contain workspace/user info
+  const state = searchParams.get('state');
   const error = searchParams.get('error');
   const errorDescription = searchParams.get('error_description');
 
@@ -24,28 +25,25 @@ export async function GET(request: NextRequest) {
     status,
     state,
     error,
+    url: request.url,
   });
 
   // If OAuth was denied or failed
   if (error) {
     console.error('[COMPOSIO_CALLBACK] OAuth error:', error, errorDescription);
     return NextResponse.redirect(
-      new URL(`/crm?tab=integraciones&error=${encodeURIComponent(errorDescription || error)}&toolkit=${toolkit || ''}`, request.url)
+      new URL(`/crm?integraciones_error=${encodeURIComponent(errorDescription || error)}`, request.url)
     );
   }
 
-  // Validate toolkit
-  if (!toolkit || !['facebook', 'instagram'].includes(toolkit)) {
-    console.error('[COMPOSIO_CALLBACK] Invalid or missing toolkit:', toolkit);
-    return NextResponse.redirect(
-      new URL('/crm?tab=integraciones&error=invalid_toolkit', request.url)
-    );
-  }
+  // Try to determine the toolkit from params or from our pending connections
+  let typedToolkit: ComposioToolkit | null = null;
 
-  const typedToolkit = toolkit as ComposioToolkit;
+  if (toolkit && ['facebook', 'instagram'].includes(toolkit)) {
+    typedToolkit = toolkit as ComposioToolkit;
+  }
 
   // Try to extract workspace/user info from state parameter
-  // State format: ws_{workspaceId}_user_{userId} or JSON
   let workspaceId = '';
   let userId = '';
 
@@ -55,7 +53,6 @@ export async function GET(request: NextRequest) {
       workspaceId = stateData.workspaceId || '';
       userId = stateData.userId || '';
     } catch {
-      // State might be the composioUserId format: ws_{workspaceId}_user_{userId}
       const match = state.match(/^ws_([^_]+)_user_(.+)$/);
       if (match) {
         workspaceId = match[1];
@@ -64,27 +61,58 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // If we couldn't parse state, try to find a pending connection for this toolkit
+  // If we couldn't parse state, find pending connections in DB
   if (!workspaceId || !userId) {
-    const pendingConnection = await db.composioConnection.findFirst({
-      where: {
-        toolkit: typedToolkit,
-        connected: false,
-      },
-      orderBy: { createdAt: 'desc' },
+    const pendingFilter: { toolkit?: string; connected: boolean } = { connected: false };
+    if (typedToolkit) pendingFilter.toolkit = typedToolkit;
+
+    const pendingConnections = await db.composioConnection.findMany({
+      where: pendingFilter,
+      orderBy: { updatedAt: 'desc' },
+      take: 5,
     });
 
-    if (pendingConnection) {
-      workspaceId = pendingConnection.workspaceId;
-      userId = pendingConnection.userId;
+    // Find the most recent pending connection
+    if (pendingConnections.length > 0) {
+      // If we know the toolkit, pick the matching one
+      const match = typedToolkit
+        ? pendingConnections.find(c => c.toolkit === typedToolkit)
+        : pendingConnections[0];
+
+      if (match) {
+        workspaceId = match.workspaceId;
+        userId = match.userId;
+        if (!typedToolkit) typedToolkit = match.toolkit as ComposioToolkit;
+      }
     }
   }
 
-  // If still no workspace/user, redirect with error
-  if (!workspaceId || !userId) {
-    console.error('[COMPOSIO_CALLBACK] Could not determine workspace/user');
+  // If we still don't have workspace/user but have a connectedAccountId,
+  // try to find the connection by the connectedAccountId stored in metadata
+  if ((!workspaceId || !userId) && connectedAccountId) {
+    const allConnections = await db.composioConnection.findMany({
+      where: { connected: false },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    const matchByAccountId = allConnections.find(c => {
+      const meta = c.metadata as Record<string, unknown>;
+      return meta?.connectedAccountId === connectedAccountId;
+    });
+
+    if (matchByAccountId) {
+      workspaceId = matchByAccountId.workspaceId;
+      userId = matchByAccountId.userId;
+      typedToolkit = matchByAccountId.toolkit as ComposioToolkit;
+    }
+  }
+
+  // If still no workspace/user, try to verify any pending connection
+  if (!workspaceId || !userId || !typedToolkit) {
+    console.error('[COMPOSIO_CALLBACK] Could not determine workspace/user/toolkit');
+    // Redirect to CRM anyway so the user isn't stuck
     return NextResponse.redirect(
-      new URL('/crm?tab=integraciones&error=session_expired', request.url)
+      new URL('/crm?integraciones_status=callback_unknown', request.url)
     );
   }
 
@@ -103,42 +131,22 @@ export async function GET(request: NextRequest) {
 
     console.log(`[COMPOSIO_CALLBACK] Connection marked as connected: ${typedToolkit} for workspace ${workspaceId}`);
 
-    // Verify connection via Composio SDK
-    let verified = false;
+    // Verify connection via Composio SDK (updates our DB with latest data)
     try {
       const statusResult = await checkIntegrationStatus(workspaceId, userId, typedToolkit);
-      verified = statusResult.connected;
-      console.log(`[COMPOSIO_CALLBACK] SDK verification: ${typedToolkit} connected=${verified}`);
+      console.log(`[COMPOSIO_CALLBACK] SDK verification: ${typedToolkit} connected=${statusResult.connected}`);
     } catch (verifyError) {
       console.warn('[COMPOSIO_CALLBACK] SDK verification failed (connection may still be valid):', verifyError);
     }
 
-    // Try to set up triggers
-    let triggersSetup = false;
-    try {
-      const triggerResults = await setupTriggersForToolkit(workspaceId, userId, typedToolkit);
-      triggersSetup = triggerResults.length > 0 && triggerResults.some(r => r.success);
-      console.log(`[COMPOSIO_CALLBACK] Triggers setup for ${typedToolkit}:`, triggerResults);
-    } catch (triggerError) {
-      // Triggers may not be available for FB/IG yet - this is expected
-      console.warn(`[COMPOSIO_CALLBACK] Triggers setup skipped for ${typedToolkit}:`, triggerError);
-    }
-
-    // Redirect to CRM integrations page with success
-    const successParams = new URLSearchParams({
-      tab: 'integraciones',
-      connected: typedToolkit,
-      verified: String(verified),
-      triggers: String(triggersSetup),
-    });
-
+    // Redirect to CRM integrations page with success indicator
     return NextResponse.redirect(
-      new URL(`/crm?${successParams.toString()}`, request.url)
+      new URL(`/crm?integraciones_conectado=${typedToolkit}`, request.url)
     );
   } catch (error) {
     console.error('[COMPOSIO_CALLBACK] Error processing callback:', error);
     return NextResponse.redirect(
-      new URL(`/crm?tab=integraciones&error=callback_failed&toolkit=${typedToolkit}`, request.url)
+      new URL(`/crm?integraciones_error=callback_failed`, request.url)
     );
   }
 }
@@ -148,10 +156,10 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    console.log('[COMPOSIO_CALLBACK] POST callback received:', JSON.stringify(body));
+    console.log('[COMPOSIO_CALLBACK] POST callback received:', JSON.stringify(body).substring(0, 500));
 
-    const toolkit = body.toolkit as ComposioToolkit | undefined;
-    const connectedAccountId = body.connectedAccountId || body.connectedAccountId;
+    const toolkit = (body.toolkit || body.toolkitSlug) as ComposioToolkit | undefined;
+    const connectedAccountId = body.connectedAccountId || body.id;
     const status = body.status || body.connectionStatus;
 
     if (!toolkit || !['facebook', 'instagram'].includes(toolkit)) {
@@ -182,11 +190,11 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      // Try trigger setup
+      // Verify via SDK
       try {
-        await setupTriggersForToolkit(pendingConnection.workspaceId, pendingConnection.userId, typedToolkit);
+        await checkIntegrationStatus(pendingConnection.workspaceId, pendingConnection.userId, typedToolkit);
       } catch {
-        console.warn('[COMPOSIO_CALLBACK] POST: Triggers setup skipped');
+        console.warn('[COMPOSIO_CALLBACK] POST: SDK verification skipped');
       }
     }
 

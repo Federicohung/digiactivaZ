@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken, extractBearerToken } from '@/lib/auth';
-import { checkIntegrationStatus, upsertComposioConnection } from '@/lib/composio';
+import { checkIntegrationStatus } from '@/lib/composio';
 import type { ComposioToolkit } from '@/lib/composio';
-import { db } from '@/lib/db';
 
 async function getAuth(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
@@ -14,6 +13,8 @@ async function getAuth(request: NextRequest) {
 
 // GET /api/composio/status — Check connection status for Facebook or Instagram
 // Query: ?toolkit=facebook|instagram
+// This endpoint checks both Composio API AND our database.
+// It auto-updates our DB when it discovers a connection is ACTIVE.
 export async function GET(request: NextRequest) {
   const auth = await getAuth(request);
   if (!auth || !auth.activeWorkspaceId) {
@@ -33,57 +34,23 @@ export async function GET(request: NextRequest) {
 
     const typedToolkit = toolkit as ComposioToolkit;
 
-    // Check via Composio SDK v0.8.1
+    // Check via Composio SDK (also updates our DB if needed)
     const statusResult = await checkIntegrationStatus(
       auth.activeWorkspaceId,
       auth.userId,
       typedToolkit
     );
 
-    // Also check our database record
-    const dbConnection = await db.composioConnection.findUnique({
-      where: {
-        workspaceId_toolkit: {
-          workspaceId: auth.activeWorkspaceId,
-          toolkit: typedToolkit,
-        },
-      },
-    });
-
-    // If Composio says connected but our DB doesn't reflect it, update
-    if (statusResult.connected) {
-      await upsertComposioConnection(auth.activeWorkspaceId, auth.userId, typedToolkit, {
-        connected: true,
-        accountId: statusResult.connectedAccountId,
-        accountName: statusResult.accountName,
-        metadata: {
-          ...(dbConnection?.metadata as Record<string, unknown> || {}),
-          status: 'active',
-          connectedAt: new Date().toISOString(),
-          connectedAccountId: statusResult.connectedAccountId,
-        },
-      });
-    }
-
     return NextResponse.json({
       connected: statusResult.connected,
       toolkit: typedToolkit,
       connectedAccountId: statusResult.connectedAccountId,
       accountName: statusResult.accountName,
-      dbRecord: dbConnection
-        ? {
-            id: dbConnection.id,
-            accountId: dbConnection.accountId,
-            accountName: dbConnection.accountName,
-            connected: dbConnection.connected,
-            createdAt: dbConnection.createdAt,
-          }
-        : null,
     });
   } catch (error) {
     console.error('[COMPOSIO_STATUS_ERROR]', error);
     return NextResponse.json(
-      { error: 'Error al verificar estado de conexión' },
+      { error: 'Error al verificar estado de conexión', connected: false },
       { status: 500 }
     );
   }

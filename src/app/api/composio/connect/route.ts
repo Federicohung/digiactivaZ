@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken, extractBearerToken } from '@/lib/auth';
-import { initiateOAuth, upsertComposioConnection, setupTriggersForToolkit } from '@/lib/composio';
+import { initiateOAuth } from '@/lib/composio';
 import type { ComposioToolkit } from '@/lib/composio';
 
 async function getAuth(request: NextRequest) {
@@ -14,7 +14,8 @@ async function getAuth(request: NextRequest) {
 // POST /api/composio/connect — Initiate OAuth flow for Facebook or Instagram
 // Body: { toolkit: 'facebook' | 'instagram' }
 // Returns the auth URL for the user to visit.
-// After the user authenticates, triggers are automatically set up.
+// After the user authenticates, Composio marks the connection as ACTIVE.
+// The frontend polls /api/composio/status to detect the change.
 export async function POST(request: NextRequest) {
   const auth = await getAuth(request);
   if (!auth || !auth.activeWorkspaceId) {
@@ -35,6 +36,7 @@ export async function POST(request: NextRequest) {
     const typedToolkit = toolkit as ComposioToolkit;
 
     // Initiate OAuth flow via Composio
+    // This also saves a pending connection to our DB
     const { redirectUrl, connectedAccountId } = await initiateOAuth(
       auth.activeWorkspaceId,
       auth.userId,
@@ -43,49 +45,22 @@ export async function POST(request: NextRequest) {
 
     if (!redirectUrl) {
       return NextResponse.json(
-        { error: 'No se pudo generar la URL de autenticación' },
+        { error: 'No se pudo generar la URL de autenticación. Verifique que la API key de Composio sea válida y que el toolkit esté habilitado.' },
         { status: 500 }
       );
-    }
-
-    // Store pending connection in our database
-    await upsertComposioConnection(auth.activeWorkspaceId, auth.userId, typedToolkit, {
-      connected: false,
-      metadata: {
-        connectedAccountId,
-        status: 'pending',
-        initiatedAt: new Date().toISOString(),
-      },
-    });
-
-    // Try to set up triggers immediately (will work if already authenticated)
-    // If not yet authenticated, triggers will be set up via the callback or manual trigger
-    let triggersSetup = false;
-    try {
-      const triggerResults = await setupTriggersForToolkit(
-        auth.activeWorkspaceId,
-        auth.userId,
-        typedToolkit
-      );
-      triggersSetup = triggerResults.some(r => r.success);
-    } catch {
-      // Triggers will fail if OAuth is not yet completed — this is expected
-      console.log('[COMPOSIO_CONNECT] Triggers setup deferred (OAuth not yet completed)');
     }
 
     return NextResponse.json({
       authUrl: redirectUrl,
       toolkit: typedToolkit,
+      connectedAccountId,
       message: `Visite la URL para conectar su cuenta de ${typedToolkit === 'facebook' ? 'Facebook' : 'Instagram'}`,
-      triggersSetup,
-      nextStep: triggersSetup
-        ? 'Conexión completada y triggers activos'
-        : 'Después de autenticar, llame POST /api/composio/triggers con action=setup para activar los triggers',
     });
   } catch (error) {
     console.error('[COMPOSIO_CONNECT_ERROR]', error);
+    const message = error instanceof Error ? error.message : 'Error al iniciar conexión OAuth';
     return NextResponse.json(
-      { error: 'Error al iniciar conexión OAuth' },
+      { error: message },
       { status: 500 }
     );
   }

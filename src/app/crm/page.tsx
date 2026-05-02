@@ -282,7 +282,17 @@ function useInitAuth() {
 
 export default function CRMPage() {
   const { token, setToken, user, setUser, loading } = useInitAuth()
-  const [activeSection, setActiveSection] = useState<Section>('hoy')
+  const [activeSection, setActiveSection] = useState<Section>(() => {
+    // Read initial section from URL params (e.g., from OAuth callback redirect)
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const tab = params.get('tab')
+      if (tab && ['hoy', 'pipeline', 'contactos', 'conversaciones', 'bandeja', 'agente', 'workspaces', 'integraciones', 'ajustes'].includes(tab)) {
+        return tab as Section
+      }
+    }
+    return 'hoy'
+  })
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   const handleLogin = useCallback(async (email: string, password: string) => {
@@ -1979,9 +1989,12 @@ function IntegracionesSection({ token }: { token: string }) {
   const [connecting, setConnecting] = useState<string | null>(null)
   const [syncing, setSyncing] = useState<string | null>(null)
   const [syncResult, setSyncResult] = useState<{ channel: string; newMessages: number } | null>(null)
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
   // Check connection status for Facebook and Instagram
   const checkStatus = useCallback(() => {
+    setFbStatus('loading')
+    setIgStatus('loading')
     apiFetch('/api/composio/status?toolkit=facebook', token)
       .then(r => r.json())
       .then(data => setFbStatus(data.connected ? 'connected' : 'disconnected'))
@@ -1993,26 +2006,52 @@ function IntegracionesSection({ token }: { token: string }) {
       .catch(() => setIgStatus('disconnected'))
   }, [token])
 
-  // Check status on mount and check URL params for callback results
+  // Check status on mount and handle URL params from OAuth callback
   useEffect(() => {
     checkStatus()
 
     // Check if redirected back from OAuth callback
     const params = new URLSearchParams(window.location.search)
-    const connected = params.get('connected')
-    const error = params.get('error')
-    if (connected) {
-      toast.success(`${connected === 'facebook' ? 'Facebook' : 'Instagram'} conectado exitosamente`)
-      // Clean URL
+    const integracionesConectado = params.get('integraciones_conectado')
+    const integracionesError = params.get('integraciones_error')
+    const integracionesStatus = params.get('integraciones_status')
+    const connected = params.get('connected')  // old format compat
+
+    if (integracionesConectado) {
+      const name = integracionesConectado === 'facebook' ? 'Facebook' : 'Instagram'
+      toast.success(`${name} conectado exitosamente`)
       window.history.replaceState({}, '', '/crm')
-      // Re-check status after a short delay
+      // Re-check status after a delay (Composio may take a moment to report ACTIVE)
+      setTimeout(checkStatus, 1500)
+      setTimeout(checkStatus, 5000)
+    } else if (integracionesError) {
+      toast.error(`Error al conectar: ${integracionesError}`)
+      window.history.replaceState({}, '', '/crm')
+    } else if (integracionesStatus === 'callback_unknown') {
+      toast.info('Conexión recibida pero no se pudo verificar automáticamente. Revisando estado...')
+      window.history.replaceState({}, '', '/crm')
+      setTimeout(checkStatus, 2000)
+      setTimeout(checkStatus, 6000)
+    } else if (connected) {
+      toast.success(`${connected === 'facebook' ? 'Facebook' : 'Instagram'} conectado exitosamente`)
+      window.history.replaceState({}, '', '/crm')
       setTimeout(checkStatus, 2000)
     }
-    if (error) {
+
+    // Also check for error param (old format)
+    const error = params.get('error')
+    if (error && !integracionesError) {
       toast.error(`Error al conectar: ${error}`)
       window.history.replaceState({}, '', '/crm')
     }
   }, [checkStatus])
+
+  // Cleanup polling interval on unmount
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+    }
+  }, [])
 
   const handleConnect = async (toolkit: 'facebook' | 'instagram') => {
     setConnecting(toolkit)
@@ -2023,38 +2062,54 @@ function IntegracionesSection({ token }: { token: string }) {
       })
       const data = await res.json()
 
+      if (data.error) {
+        toast.error(data.error)
+        setConnecting(null)
+        return
+      }
+
       if (data.authUrl) {
-        // Open OAuth URL in a new tab/window
-        window.open(data.authUrl, '_blank')
+        // Open OAuth URL — try same window first for better popup blocker compatibility
+        const newWindow = window.open(data.authUrl, '_blank')
+        if (!newWindow) {
+          // If popup blocked, use same window navigation
+          toast.info('Se abrirá la autorización en esta ventana. Vuelve después de autorizar.')
+          setTimeout(() => { window.location.href = data.authUrl }, 1000)
+          return
+        }
         toast.info(`Autoriza tu cuenta de ${toolkit === 'facebook' ? 'Facebook' : 'Instagram'} en la ventana que se abrió`)
+
         // Start polling for connection status
         let attempts = 0
-        const poll = setInterval(() => {
+        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = setInterval(() => {
           attempts++
           apiFetch(`/api/composio/status?toolkit=${toolkit}`, token)
             .then(r => r.json())
             .then(statusData => {
               if (statusData.connected) {
-                clearInterval(poll)
+                if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+                pollIntervalRef.current = null
                 if (toolkit === 'facebook') setFbStatus('connected')
                 else setIgStatus('connected')
-                toast.success(`${toolkit === 'facebook' ? 'Facebook' : 'Instagram'} conectado`)
+                toast.success(`${toolkit === 'facebook' ? 'Facebook' : 'Instagram'} conectado exitosamente`)
                 setConnecting(null)
               }
             })
             .catch(() => {})
-          if (attempts >= 30) {
-            clearInterval(poll)
+          if (attempts >= 40) {  // 2 minutes timeout (40 * 3s)
+            if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+            pollIntervalRef.current = null
             setConnecting(null)
-            toast.info('Tiempo de espera agotado. Verifica el estado manualmente.')
+            toast.info('Tiempo de espera agotado. Haz clic en "Verificar estado" para comprobar manualmente.')
           }
         }, 3000)
       } else {
-        toast.error(data.error || 'No se pudo generar la URL de conexión')
+        toast.error('No se pudo generar la URL de conexión')
         setConnecting(null)
       }
-    } catch {
-      toast.error('Error al iniciar conexión')
+    } catch (err) {
+      toast.error('Error al iniciar conexión. Inténtalo de nuevo.')
       setConnecting(null)
     }
   }
@@ -2068,7 +2123,9 @@ function IntegracionesSection({ token }: { token: string }) {
         body: JSON.stringify({ channel, action: 'sync' }),
       })
       const data = await res.json()
-      if (data.newMessages !== undefined) {
+      if (data.error) {
+        toast.error(data.error)
+      } else if (data.newMessages !== undefined) {
         setSyncResult({ channel, newMessages: data.newMessages })
         toast.success(`${data.newMessages} mensajes nuevos sincronizados de ${channel === 'messenger' ? 'Facebook' : 'Instagram'}`)
       } else {
@@ -2135,8 +2192,8 @@ function IntegracionesSection({ token }: { token: string }) {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-gray-900">Integraciones</h2>
-        <Button variant="outline" size="sm" className="gap-2" onClick={checkStatus}>
-          <RefreshCw className="w-3.5 h-3.5" /> Verificar estado
+        <Button variant="outline" size="sm" className="gap-2" onClick={checkStatus} disabled={fbStatus === 'loading' && igStatus === 'loading'}>
+          <RefreshCw className={`w-3.5 h-3.5 ${fbStatus === 'loading' || igStatus === 'loading' ? 'animate-spin' : ''}`} /> Verificar estado
         </Button>
       </div>
 
