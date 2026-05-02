@@ -295,3 +295,30 @@ Stage Summary:
 - BandejaSection fully redesigned with modern SaaS-style UI
 - New /api/inbox/sync endpoint for Composio message synchronization
 - Deployed at digiactiva-z.vercel.app
+
+---
+Task ID: 1
+Agent: main
+Task: Fix inbox infinite loop, add connected profiles display, fix Composio tool execution, auto-sync
+
+Work Log:
+- Diagnosed infinite loop: convRefresh state triggered both conversations and messages useEffects, causing cascading re-renders
+- Removed convRefresh state entirely; replaced with direct loadConversations() async function
+- Fixed mark-as-read: now updates local state only instead of triggering full re-fetch
+- Created /api/composio/connections endpoint to list connected profiles with account names
+- Added connected profiles bar to inbox showing FB/IG account names (e.g. "Rest. Pasta Al Vuelo")
+- Added auto-sync on first inbox load via hasAutoSynced ref
+- Added warning banner when no accounts are connected
+- Fixed Composio tool execution: added dangerouslySkipVersionCheck, always pass arguments (not text), pass userId
+- Fixed build: changed from prisma db push to prisma generate in build script
+- Added POSTGRES_URL and other env vars to Vercel
+- Enhanced error messages in sync route for debugging
+- Successfully synced 38 Instagram messages and displayed 16 conversations
+
+Stage Summary:
+- Inbox no longer loops infinitely
+- Connected profiles now show: "Rest. Pasta Al Vuelo" (Facebook), "Instagram" (connected)
+- Auto-sync pulls messages from Composio on first load
+- 38 Instagram messages synced, 10 Instagram conversations created
+- Facebook page name saved to DB: "Rest. Pasta Al Vuelo"
+- Deployed to https://digiactiva-z.vercel.app
