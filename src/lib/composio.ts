@@ -274,8 +274,8 @@ const INSTAGRAM_TOOLS = {
 
 /**
  * Execute a Composio tool using the v0.8.1 API.
- * Uses composio.tools.execute(slug, { connectedAccountId, version, ...params }).
- * The version parameter defaults to 'latest' to avoid "Toolkit version not specified" error.
+ * Uses composio.tools.execute(slug, { connectedAccountId, ...params }).
+ * Uses dangerouslySkipVersionCheck since we don't know the exact toolkit version at build time.
  */
 export async function executeComposioTool(
   toolSlug: string,
@@ -286,7 +286,7 @@ export async function executeComposioTool(
   try {
     const result = await composio.tools.execute(toolSlug, {
       connectedAccountId,
-      version: 'latest',
+      dangerouslySkipVersionCheck: true,
       arguments: Object.keys(params).length > 0 ? params : undefined,
     });
     return result;
