@@ -275,6 +275,7 @@ const INSTAGRAM_TOOLS = {
 /**
  * Execute a Composio tool using the v0.8.1 API.
  * Uses composio.tools.execute(slug, { connectedAccountId, ...params }).
+ * Requires toolkitVersion for proper execution.
  */
 export async function executeComposioTool(
   toolSlug: string,
@@ -283,10 +284,23 @@ export async function executeComposioTool(
 ) {
   const composio = getComposio();
   try {
-    const result = await composio.tools.execute(toolSlug, {
+    // Determine toolkit from slug prefix
+    let toolkitVersion = undefined as string | undefined;
+    if (toolSlug.startsWith('FACEBOOK_')) {
+      toolkitVersion = 'latest';
+    } else if (toolSlug.startsWith('INSTAGRAM_')) {
+      toolkitVersion = 'latest';
+    }
+
+    const executeParams: Record<string, unknown> = {
       connectedAccountId,
       ...params,
-    });
+    };
+    if (toolkitVersion) {
+      executeParams.toolkitVersion = toolkitVersion;
+    }
+
+    const result = await composio.tools.execute(toolSlug, executeParams);
     return result;
   } catch (error) {
     console.error(`[COMPOSIO_TOOL_EXECUTE_ERROR] ${toolSlug}:`, error);
