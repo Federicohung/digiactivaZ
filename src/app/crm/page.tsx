@@ -383,7 +383,7 @@ export default function CRMPage() {
           {activeSection === 'pipeline' && <PipelineSection token={token} />}
           {activeSection === 'contactos' && <ContactosSection token={token} />}
           {activeSection === 'conversaciones' && <ConversacionesSection token={token} />}
-          {activeSection === 'bandeja' && <BandejaSection token={token} />}
+          {activeSection === 'bandeja' && <BandejaSection token={token} onNavigate={setActiveSection} />}
           {activeSection === 'agente' && <AgenteSection token={token} />}
           {activeSection === 'workspaces' && <WorkspacesSection token={token} user={user} onUserUpdate={setUser} />}
           {activeSection === 'integraciones' && <IntegracionesSection token={token} />}
@@ -1476,34 +1476,68 @@ function ConversacionesSection({ token }: { token: string }) {
    5. BANDEJA SECTION (Inbox)
    ═══════════════════════════════════════════════════════════════ */
 
-function BandejaSection({ token }: { token: string }) {
+function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s: Section) => void }) {
+  /* ── Channel config ── */
+  const CHANNEL_COLORS: Record<string, { bg: string; text: string; border: string; dot: string; badge: string }> = {
+    messenger: { bg: 'bg-blue-50', text: 'text-blue-600', border: 'border-blue-200', dot: 'bg-blue-500', badge: 'bg-blue-500 text-white' },
+    instagram: { bg: 'bg-pink-50', text: 'text-pink-600', border: 'border-pink-200', dot: 'bg-pink-500', badge: 'bg-gradient-to-r from-purple-500 to-pink-500 text-white' },
+    web_chat: { bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200', dot: 'bg-gray-400', badge: 'bg-gray-500 text-white' },
+    whatsapp: { bg: 'bg-emerald-50', text: 'text-emerald-600', border: 'border-emerald-200', dot: 'bg-emerald-500', badge: 'bg-emerald-500 text-white' },
+    external: { bg: 'bg-orange-50', text: 'text-orange-600', border: 'border-orange-200', dot: 'bg-orange-500', badge: 'bg-orange-500 text-white' },
+  }
+
+  const CHANNEL_LABELS: Record<string, string> = {
+    messenger: 'Messenger',
+    instagram: 'Instagram',
+    web_chat: 'Web Chat',
+    whatsapp: 'WhatsApp',
+    external: 'Externo',
+  }
+
+  const FILTER_TABS = ['all', 'messenger', 'instagram', 'web_chat'] as const
+  type FilterTab = typeof FILTER_TABS[number]
+
+  /* ── State ── */
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [sendText, setSendText] = useState('')
   const [loading, setLoading] = useState(true)
   const [convRefresh, setConvRefresh] = useState(0)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [activeFilter, setActiveFilter] = useState<FilterTab>('all')
+  const [syncing, setSyncing] = useState(false)
+  const [msgLoading, setMsgLoading] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const chatScrollRef = useRef<HTMLDivElement>(null)
 
   const fetchConversations = useCallback(() => setConvRefresh(k => k + 1), [])
 
+  /* ── Fetch conversations ── */
   useEffect(() => {
     let cancelled = false
-    apiFetch('/api/inbox/conversations', token)
+    setLoading(true)
+    const params = new URLSearchParams()
+    if (activeFilter !== 'all') params.set('channel', activeFilter)
+    const qs = params.toString() ? `?${params.toString()}` : ''
+    apiFetch(`/api/inbox/conversations${qs}`, token)
       .then(r => r.json())
       .then(data => { if (!cancelled && data.conversations) setConversations(data.conversations) })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [token, convRefresh])
+  }, [token, convRefresh, activeFilter])
 
+  /* ── Fetch messages ── */
   useEffect(() => {
     if (!selectedId) return
     let cancelled = false
+    setMsgLoading(true)
     apiFetch(`/api/inbox/conversations/${selectedId}/messages`, token)
       .then(r => r.json())
       .then(data => { if (!cancelled && data.messages) setMessages(data.messages) })
       .catch(() => {})
+      .finally(() => { if (!cancelled) setMsgLoading(false) })
 
     // Mark as read
     apiFetch(`/api/inbox/conversations/${selectedId}/read`, token, { method: 'POST' })
@@ -1512,10 +1546,14 @@ function BandejaSection({ token }: { token: string }) {
     return () => { cancelled = true }
   }, [selectedId, token, convRefresh])
 
+  /* ── Auto-scroll ── */
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
+    }
   }, [messages])
 
+  /* ── Send message ── */
   const sendMessage = async () => {
     if (!sendText.trim() || !selectedId) return
     const text = sendText.trim()
@@ -1525,7 +1563,6 @@ function BandejaSection({ token }: { token: string }) {
         method: 'POST',
         body: JSON.stringify({ content: text }),
       })
-      // Re-fetch messages
       const res = await apiFetch(`/api/inbox/conversations/${selectedId}/messages`, token)
       const data = await res.json()
       if (data.messages) setMessages(data.messages)
@@ -1535,163 +1572,410 @@ function BandejaSection({ token }: { token: string }) {
     }
   }
 
+  /* ── Sync ── */
+  const handleSync = async () => {
+    setSyncing(true)
+    try {
+      const res = await apiFetch('/api/inbox/sync', token, { method: 'POST', body: JSON.stringify({}) })
+      const data = await res.json()
+      if (data.ok) {
+        toast.success(`Sincronización completa — ${data.totalSynced ?? 0} mensajes nuevos`)
+        fetchConversations()
+        if (selectedId) {
+          const msgRes = await apiFetch(`/api/inbox/conversations/${selectedId}/messages`, token)
+          const msgData = await msgRes.json()
+          if (msgData.messages) setMessages(msgData.messages)
+        }
+      } else {
+        toast.error(data.error || 'Error en sincronización')
+      }
+    } catch {
+      toast.error('Error al sincronizar')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  /* ── Derived ── */
+  const filtered = conversations.filter(c => {
+    if (activeFilter !== 'all' && c.channel !== activeFilter) return false
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase()
+      return c.contact.nombre.toLowerCase().includes(q) || (c.lastMessagePreview || '').toLowerCase().includes(q)
+    }
+    return true
+  })
+
   const selectedConvo = conversations.find(c => c.id === selectedId)
 
-  if (loading) return <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-[#0066FF]" /></div>
+  const countByChannel = (channel: string) =>
+    channel === 'all' ? conversations.length : conversations.filter(c => c.channel === channel).length
+
+  const unreadByChannel = (channel: string) =>
+    channel === 'all'
+      ? conversations.reduce((s, c) => s + c.unreadCount, 0)
+      : conversations.filter(c => c.channel === channel).reduce((s, c) => s + c.unreadCount, 0)
+
+  const getInitials = (name: string) => name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+
+  /* ── Loading skeleton ── */
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center" style={{ height: 'calc(100vh - 140px)' }}>
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="w-8 h-8 animate-spin text-[#0066FF]" />
+          <p className="text-sm text-gray-400">Cargando bandeja…</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-0 bg-white rounded-xl border border-gray-200 overflow-hidden" style={{ height: 'calc(100vh - 180px)' }}>
-      {/* Conversation List */}
-      <div className="lg:col-span-4 border-r border-gray-200 overflow-y-auto">
-        <div className="p-3 border-b border-gray-100">
-          <h3 className="text-sm font-semibold text-gray-900">Conversaciones</h3>
-        </div>
-        <div className="divide-y divide-gray-50">
-          {conversations.length === 0 ? (
-            <p className="text-center py-8 text-sm text-gray-500">Sin conversaciones</p>
-          ) : (
-            conversations.map(conv => (
-              <div
-                key={conv.id}
-                className={`p-3 cursor-pointer transition-colors ${
-                  selectedId === conv.id ? 'bg-blue-50' : 'hover:bg-gray-50'
-                }`}
-                onClick={() => setSelectedId(conv.id)}
-              >
-                <div className="flex items-center gap-3">
-                  <div className="relative">
-                    <Avatar className="w-9 h-9">
-                      <AvatarFallback className="bg-gray-200 text-gray-600 text-xs">
-                        {conv.contact.nombre.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
-                    {conv.unreadCount > 0 && (
-                      <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-[#0066FF] text-white text-[10px] flex items-center justify-center font-bold">
-                        {conv.unreadCount}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-gray-900 truncate">{conv.contact.nombre}</span>
-                      <span className="text-xs text-gray-400">{formatRelativeTime(conv.lastMessageAt)}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-gray-400">{CHANNEL_ICONS[conv.channel]}</span>
-                      <p className="text-xs text-gray-500 truncate">{conv.lastMessagePreview || 'Sin mensajes'}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
+    <div className="flex flex-col bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden" style={{ height: 'calc(100vh - 140px)' }}>
+      {/* ═══ Header with filter tabs ═══ */}
+      <div className="shrink-0 border-b border-gray-200 bg-white">
+        <div className="flex items-center justify-between px-4 py-2.5">
+          <div className="flex items-center gap-1">
+            {FILTER_TABS.map(tab => {
+              const label = tab === 'all' ? 'Todos' : CHANNEL_LABELS[tab] || tab
+              const ch = tab === 'all' ? 'messenger' : tab
+              const unread = unreadByChannel(tab)
+              return (
+                <button
+                  key={tab}
+                  onClick={() => setActiveFilter(tab)}
+                  className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                    activeFilter === tab
+                      ? `${CHANNEL_COLORS[ch]?.bg || 'bg-blue-50'} ${CHANNEL_COLORS[ch]?.text || 'text-blue-600'} shadow-sm`
+                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
+                  }`}
+                >
+                  {tab !== 'all' && CHANNEL_ICONS[tab]}
+                  {label}
+                  {unread > 0 && (
+                    <span className={`ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold leading-none ${
+                      activeFilter === tab ? 'bg-white/80 text-gray-700' : 'bg-gray-200 text-gray-600'
+                    }`}>
+                      {unread}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 text-xs h-8"
+                  onClick={handleSync}
+                  disabled={syncing}
+                >
+                  {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                  {syncing ? 'Sincronizando…' : 'Sincronizar'}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Sincronizar mensajes desde Facebook/Instagram</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </div>
 
-      {/* Messages */}
-      <div className="lg:col-span-5 flex flex-col">
-        {selectedId ? (
-          <>
-            <div className="p-3 border-b border-gray-100 flex items-center gap-3">
-              <Avatar className="w-8 h-8">
-                <AvatarFallback className="bg-gray-200 text-gray-600 text-xs">
-                  {selectedConvo?.contact.nombre.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
-              <div>
-                <p className="text-sm font-medium text-gray-900">{selectedConvo?.contact.nombre}</p>
-                <p className="text-xs text-gray-500 flex items-center gap-1">
-                  {CHANNEL_ICONS[selectedConvo?.channel || 'web_chat']}
-                  {selectedConvo?.channel === 'whatsapp' ? 'WhatsApp' : selectedConvo?.channel === 'messenger' ? 'Messenger' : 'Web Chat'}
+      {/* ═══ 3-column body ═══ */}
+      <div className="flex flex-1 min-h-0">
+        {/* ── Column 1: Conversation list (320px) ── */}
+        <div className="w-80 shrink-0 border-r border-gray-100 flex flex-col bg-gray-50/50">
+          {/* Search */}
+          <div className="shrink-0 p-3">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+              <Input
+                placeholder="Buscar conversación…"
+                className="pl-8 h-8 text-sm bg-white border-gray-200 focus:border-[#0066FF] focus:ring-[#0066FF]/20"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {/* List */}
+          <div className="flex-1 overflow-y-auto min-h-0 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-track]:transparent">
+            {filtered.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
+                <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center mb-3">
+                  <Inbox className="w-6 h-6 text-gray-300" />
+                </div>
+                <p className="text-sm font-medium text-gray-400">Sin conversaciones</p>
+                <p className="text-xs text-gray-300 mt-1">
+                  {searchQuery ? 'Intenta con otra búsqueda' : 'Los mensajes aparecerán aquí'}
                 </p>
               </div>
-            </div>
-            <ScrollArea className="flex-1 p-4">
-              {messages.length === 0 && selectedId ? (
-                <div className="flex justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-[#0066FF]" /></div>
-              ) : (
-                <div className="space-y-3">
-                  {messages.map(msg => (
-                    <div key={msg.id} className={`flex ${msg.direction === 'inbound' ? 'justify-start' : 'justify-end'}`}>
-                      <div className={`max-w-[80%] rounded-lg p-3 text-sm ${
-                        msg.direction === 'inbound' ? 'bg-gray-100 text-gray-900' : 'bg-[#0066FF] text-white'
-                      }`}>
-                        <p>{msg.content}</p>
-                        <p className={`text-xs mt-1 ${msg.direction === 'inbound' ? 'text-gray-400' : 'text-blue-200'}`}>
-                          {formatTime(msg.createdAt)}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                  <div ref={messagesEndRef} />
-                </div>
-              )}
-            </ScrollArea>
-            <div className="p-3 border-t border-gray-100">
-              <div className="flex gap-2">
-                <Input
-                  placeholder="Escribe un mensaje..."
-                  value={sendText}
-                  onChange={e => setSendText(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() } }}
-                />
-                <Button size="icon" className="bg-[#0066FF] hover:bg-[#0052CC] shrink-0" onClick={sendMessage}>
-                  <Send className="w-4 h-4" />
-                </Button>
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="flex-1 flex items-center justify-center text-gray-400">
-            <p>Selecciona una conversación</p>
-          </div>
-        )}
-      </div>
+            ) : (
+              <div className="px-2 pb-2 space-y-0.5">
+                {filtered.map(conv => {
+                  const isActive = selectedId === conv.id
+                  const ch = CHANNEL_COLORS[conv.channel] || CHANNEL_COLORS.web_chat
+                  return (
+                    <button
+                      key={conv.id}
+                      className={`w-full text-left rounded-lg p-3 transition-all duration-150 group relative ${
+                        isActive
+                          ? 'bg-white shadow-sm ring-1 ring-gray-200'
+                          : 'hover:bg-white/60'
+                      }`}
+                      onClick={() => setSelectedId(conv.id)}
+                    >
+                      {/* Left accent border */}
+                      {isActive && (
+                        <div className={`absolute left-0 top-2 bottom-2 w-0.5 rounded-full ${ch.dot}`} />
+                      )}
 
-      {/* Contact Detail Sidebar */}
-      <div className="lg:col-span-3 border-l border-gray-200 p-4 overflow-y-auto hidden lg:block">
-        {selectedConvo ? (
-          <div className="space-y-4">
-            <div className="text-center">
-              <Avatar className="w-16 h-16 mx-auto">
-                <AvatarFallback className="bg-gray-200 text-gray-600 text-lg">
-                  {selectedConvo.contact.nombre.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
-              <h3 className="mt-2 text-sm font-semibold text-gray-900">{selectedConvo.contact.nombre}</h3>
-              <p className="text-xs text-gray-500">{selectedConvo.contact.empresa || 'Sin empresa'}</p>
-            </div>
-            <Separator />
-            <div className="space-y-3 text-sm">
-              {selectedConvo.contact.email && (
-                <div className="flex items-center gap-2 text-gray-600">
-                  <Mail className="w-4 h-4 text-gray-400" /> {selectedConvo.contact.email}
+                      <div className="flex items-start gap-3">
+                        {/* Avatar + channel dot */}
+                        <div className="relative shrink-0">
+                          <Avatar className="w-10 h-10">
+                            <AvatarFallback className="bg-gray-200 text-gray-600 text-xs font-medium">
+                              {getInitials(conv.contact.nombre)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white flex items-center justify-center ${ch.dot}`}>
+                          </div>
+                        </div>
+
+                        {/* Content */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={`text-sm truncate ${conv.unreadCount > 0 ? 'font-semibold text-gray-900' : 'font-medium text-gray-700'}`}>
+                              {conv.contact.nombre}
+                            </span>
+                            <span className={`text-[11px] shrink-0 ${conv.unreadCount > 0 ? 'text-[#0066FF] font-medium' : 'text-gray-400'}`}>
+                              {formatRelativeTime(conv.lastMessageAt)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span className={`shrink-0 ${ch.text}`}>{CHANNEL_ICONS[conv.channel]}</span>
+                            <p className={`text-xs truncate ${conv.unreadCount > 0 ? 'text-gray-600 font-medium' : 'text-gray-400'}`}>
+                              {conv.lastMessagePreview || 'Sin mensajes'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Unread badge */}
+                        {conv.unreadCount > 0 && (
+                          <span className="shrink-0 mt-1 w-5 h-5 rounded-full bg-[#0066FF] text-white text-[10px] font-bold flex items-center justify-center shadow-sm shadow-blue-200">
+                            {conv.unreadCount}
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Column 2: Chat area (flex) ── */}
+        <div className="flex-1 flex flex-col min-w-0 bg-white">
+          {selectedConvo ? (
+            <>
+              {/* Chat header */}
+              <div className="shrink-0 px-5 py-3 border-b border-gray-100 flex items-center justify-between bg-white">
+                <div className="flex items-center gap-3">
+                  <Avatar className="w-9 h-9">
+                    <AvatarFallback className="bg-gray-200 text-gray-600 text-xs font-medium">
+                      {getInitials(selectedConvo.contact.nombre)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900">{selectedConvo.contact.nombre}</p>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                        (CHANNEL_COLORS[selectedConvo.channel] || CHANNEL_COLORS.web_chat).badge
+                      }`}>
+                        {CHANNEL_ICONS[selectedConvo.channel]}
+                        {CHANNEL_LABELS[selectedConvo.channel] || selectedConvo.channel}
+                      </span>
+                      {selectedConvo.provider === 'composio' && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 text-[10px] font-medium">
+                          <Puzzle className="w-2.5 h-2.5" /> Composio
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
-              )}
-              {selectedConvo.contact.telefono && (
-                <div className="flex items-center gap-2 text-gray-600">
-                  <Phone className="w-4 h-4 text-gray-400" /> {selectedConvo.contact.telefono}
-                </div>
-              )}
-              {selectedConvo.contact.etapa && (
+                {selectedConvo.status === 'closed' && (
+                  <Badge variant="secondary" className="text-xs">Cerrada</Badge>
+                )}
+              </div>
+
+              {/* Messages */}
+              <div
+                ref={chatScrollRef}
+                className="flex-1 overflow-y-auto min-h-0 px-5 py-4 space-y-3 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-track]:transparent"
+              >
+                {msgLoading ? (
+                  <div className="flex justify-center py-12">
+                    <Loader2 className="w-5 h-5 animate-spin text-[#0066FF]" />
+                  </div>
+                ) : messages.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                    <MessageSquare className="w-8 h-8 mb-2 text-gray-200" />
+                    <p className="text-sm">Sin mensajes aún</p>
+                  </div>
+                ) : (
+                  messages.map(msg => {
+                    const isInbound = msg.direction === 'inbound'
+                    return (
+                      <div key={msg.id} className={`flex ${isInbound ? 'justify-start' : 'justify-end'}`}>
+                        <div
+                          className={`max-w-[75%] px-4 py-2.5 text-sm leading-relaxed shadow-sm ${
+                            isInbound
+                              ? 'bg-gray-100 text-gray-800 rounded-2xl rounded-bl-md'
+                              : 'bg-[#0066FF] text-white rounded-2xl rounded-br-md'
+                          }`}
+                        >
+                          <p className="whitespace-pre-wrap break-words">{msg.content}</p>
+                          <p className={`text-[10px] mt-1 ${isInbound ? 'text-gray-400' : 'text-blue-200'}`}>
+                            {formatTime(msg.createdAt)}
+                          </p>
+                        </div>
+                      </div>
+                    )
+                  })
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+
+              {/* Input */}
+              <div className="shrink-0 px-4 py-3 border-t border-gray-100 bg-gray-50/50">
                 <div className="flex items-center gap-2">
-                  <span className="text-gray-400 text-xs">Etapa:</span>
-                  <Badge className={ETAPA_COLORS[selectedConvo.contact.etapa]}>{ETAPA_LABELS[selectedConvo.contact.etapa]}</Badge>
+                  <Input
+                    placeholder="Escribe un mensaje…"
+                    className="flex-1 h-9 text-sm bg-white border-gray-200 focus:border-[#0066FF] focus:ring-[#0066FF]/20"
+                    value={sendText}
+                    onChange={e => setSendText(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        sendMessage()
+                      }
+                    }}
+                  />
+                  <Button
+                    size="icon"
+                    className="h-9 w-9 rounded-lg bg-[#0066FF] hover:bg-[#0052CC] shrink-0 shadow-sm shadow-blue-200 transition-all duration-200"
+                    onClick={sendMessage}
+                    disabled={!sendText.trim()}
+                  >
+                    <Send className="w-4 h-4" />
+                  </Button>
                 </div>
+              </div>
+            </>
+          ) : (
+            /* Empty state */
+            <div className="flex-1 flex flex-col items-center justify-center bg-gray-50/30">
+              <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center mb-4">
+                <MessageCircle className="w-8 h-8 text-gray-300" />
+              </div>
+              <p className="text-sm font-medium text-gray-500">Tu bandeja de entrada</p>
+              <p className="text-xs text-gray-400 mt-1">Selecciona una conversación para comenzar</p>
+            </div>
+          )}
+        </div>
+
+        {/* ── Column 3: Contact sidebar (280px) ── */}
+        <div className="w-[280px] shrink-0 border-l border-gray-100 bg-gray-50/50 flex flex-col hidden lg:flex">
+          {selectedConvo ? (
+            <div className="flex-1 overflow-y-auto min-h-0 p-5 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-track]:transparent">
+              {/* Avatar */}
+              <div className="flex flex-col items-center text-center mb-5">
+                <Avatar className="w-16 h-16 mb-3">
+                  <AvatarFallback className="bg-gray-200 text-gray-700 text-lg font-semibold">
+                    {getInitials(selectedConvo.contact.nombre)}
+                  </AvatarFallback>
+                </Avatar>
+                <h3 className="text-sm font-semibold text-gray-900">{selectedConvo.contact.nombre}</h3>
+                {selectedConvo.contact.empresa && (
+                  <p className="text-xs text-gray-500 mt-0.5">{selectedConvo.contact.empresa}</p>
+                )}
+                {selectedConvo.contact.etapa && (
+                  <Badge className={`mt-2 text-[10px] ${ETAPA_COLORS[selectedConvo.contact.etapa] || 'bg-gray-100 text-gray-600'}`}>
+                    {ETAPA_LABELS[selectedConvo.contact.etapa] || selectedConvo.contact.etapa}
+                  </Badge>
+                )}
+              </div>
+
+              <Separator className="mb-5" />
+
+              {/* Contact details */}
+              <div className="space-y-3">
+                {selectedConvo.contact.email && (
+                  <div className="flex items-center gap-2.5 text-sm">
+                    <div className="w-7 h-7 rounded-lg bg-white border border-gray-200 flex items-center justify-center shrink-0">
+                      <Mail className="w-3.5 h-3.5 text-gray-400" />
+                    </div>
+                    <span className="text-gray-600 truncate text-xs">{selectedConvo.contact.email}</span>
+                  </div>
+                )}
+                {selectedConvo.contact.telefono && (
+                  <div className="flex items-center gap-2.5 text-sm">
+                    <div className="w-7 h-7 rounded-lg bg-white border border-gray-200 flex items-center justify-center shrink-0">
+                      <Phone className="w-3.5 h-3.5 text-gray-400" />
+                    </div>
+                    <span className="text-gray-600 text-xs">{selectedConvo.contact.telefono}</span>
+                  </div>
+                )}
+              </div>
+
+              <Separator className="my-5" />
+
+              {/* Channel info */}
+              <div className="space-y-2.5">
+                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Canal</p>
+                <div className="flex items-center gap-2">
+                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium ${
+                    (CHANNEL_COLORS[selectedConvo.channel] || CHANNEL_COLORS.web_chat).badge
+                  }`}>
+                    {CHANNEL_ICONS[selectedConvo.channel]}
+                    {CHANNEL_LABELS[selectedConvo.channel] || selectedConvo.channel}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${selectedConvo.status === 'open' ? 'bg-emerald-400' : 'bg-gray-300'}`} />
+                  {selectedConvo.status === 'open' ? 'Abierta' : 'Cerrada'}
+                </div>
+                <p className="text-xs text-gray-400">Creada: {formatDate(selectedConvo.createdAt)}</p>
+              </div>
+
+              <Separator className="my-5" />
+
+              {/* Navigate to CRM */}
+              {onNavigate && (
+                <Button
+                  variant="outline"
+                  className="w-full gap-2 text-xs h-8"
+                  onClick={() => onNavigate('contactos')}
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  Ver en CRM
+                </Button>
               )}
             </div>
-            <Separator />
-            <div className="space-y-2 text-xs text-gray-500">
-              <p>Canal: <span className="text-gray-700">{selectedConvo.channel}</span></p>
-              <p>Estado: <span className="text-gray-700">{selectedConvo.status === 'open' ? 'Abierta' : 'Cerrada'}</span></p>
-              <p>Creada: <span className="text-gray-700">{formatDate(selectedConvo.createdAt)}</span></p>
+          ) : (
+            /* Empty state */
+            <div className="flex-1 flex flex-col items-center justify-center px-4 text-center">
+              <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mb-2">
+                <Users className="w-5 h-5 text-gray-300" />
+              </div>
+              <p className="text-xs text-gray-400">Selecciona una conversación</p>
             </div>
-          </div>
-        ) : (
-          <div className="flex items-center justify-center h-full text-gray-400 text-sm">
-            <p>Sin detalle</p>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   )
