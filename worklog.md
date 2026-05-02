@@ -52,3 +52,44 @@ Stage Summary:
 - Database: Neon Postgres (young-bonus-71850065)
 - Admin login: founder@digiactiva.com / digiactiva2025
 - All API endpoints verified working with real PostgreSQL database
+---
+Task ID: composio-integration
+Agent: Main Agent
+Task: Integrate Facebook & Instagram messaging via Composio SDK
+
+Work Log:
+- Installed @composio/core (v0.8.1) and @composio/vercel (v0.8.1) packages
+- Updated .env with COMPOSIO_API_KEY and COMPOSIO_WEBHOOK_SECRET
+- Added ComposioConnection model to Prisma schema (workspaceId, toolkit, connected, accountId, accountName, metadata)
+- Created /src/lib/composio.ts — Composio client library with:
+  - Singleton Composio instance with VercelProvider
+  - Session management (createComposioSession, getOrCreateSession)
+  - OAuth flow initiation (initiateOAuth) using session.authorize()
+  - Integration status checking (checkIntegrationStatus) using session.toolkits()
+  - Message fetching (fetchComposioMessages) using session.execute()
+  - Message sending (sendComposioMessage) using session.execute()
+  - Webhook signature verification (verifyWebhookSignature) using HMAC-SHA256
+  - Database helpers (upsertComposioConnection, findOrCreateContact, findOrCreateConversation)
+  - Channel mapping (toolkitToChannel)
+- Created /api/composio/connect (POST) — Initiates OAuth flow for Facebook/Instagram
+- Created /api/composio/status (GET) — Checks connection status for a toolkit
+- Created /api/composio/messages (GET) — Fetches and syncs messages from Composio
+- Created /api/composio/webhook (POST/GET) — Receives real-time messages from Composio webhooks
+- Created /api/composio/send (POST) — Sends messages via Composio to Facebook/Instagram
+- Updated /api/inbox/conversations/[id]/send — Added Composio routing for messenger/instagram channels
+  - If conversation.provider === 'composio' and channel is messenger/instagram, routes through Composio
+  - Falls back to native flow for other channels
+- Ran prisma generate to update client with new ComposioConnection model
+- All lint checks pass with zero errors
+- Committed and pushed to GitHub (commit 8451ed6)
+
+Stage Summary:
+- Composio integration layer fully implemented with 5 new API endpoints + 1 updated endpoint
+- OAuth flow: POST /api/composio/connect → returns authUrl for user to authenticate
+- Status check: GET /api/composio/status?toolkit=facebook|instagram
+- Message fetching: GET /api/composio/messages?channel=messenger|instagram
+- Webhook handler: POST /api/composio/webhook (receives real-time messages)
+- Message sending: POST /api/composio/send (sends via Composio)
+- Inbox send route updated to auto-route through Composio when provider is composio
+- Schema synced locally (prisma generate); prisma db push needs to be run on Vercel deployment (auto via build script)
+- Site URL: https://digiactiva-z.vercel.app
