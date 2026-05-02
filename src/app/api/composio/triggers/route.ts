@@ -133,8 +133,7 @@ export async function GET(request: NextRequest) {
 
       case 'active': {
         // List active trigger instances for this user
-        const composioUserId = `ws_${auth.activeWorkspaceId}_user_${auth.userId}`;
-        const result = await listActiveTriggers(composioUserId);
+        const result = await listActiveTriggers();
         return NextResponse.json({ triggers: result });
       }
 

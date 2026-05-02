@@ -1,6 +1,13 @@
 // Composio Integration Layer for DigiActiva CRM
-// Handles Facebook & Instagram messaging via Composio SDK
-// Includes Triggers for real-time message delivery
+// Handles Facebook & Instagram messaging via Composio SDK v0.8.1
+//
+// SDK v0.8.1 API:
+//   composio.toolkits.authorize(userId, toolkitSlug) → ConnectionRequest
+//   composio.connectedAccounts.list({ userIds, toolkitSlugs, statuses }) → list
+//   composio.tools.execute(slug, { connectedAccountId, ...params }) → result
+//   composio.triggers.create(userId, slug, body?) → trigger
+//   composio.triggers.listActive(query?) → list
+//   composio.triggers.verifyWebhook(params) → result
 
 import { Composio } from '@composio/core';
 import { VercelProvider } from '@composio/vercel';
@@ -19,89 +26,148 @@ export function getComposio(): Composio {
   return composioInstance;
 }
 
-// ─── Session Management ───
+// ─── Types ───
 
-/**
- * Create a Composio session for a user.
- * Uses the workspace + user combo as the Composio userId for isolation.
- */
-export async function createComposioSession(workspaceId: string, userId: string) {
-  const composio = getComposio();
-  // Composite key ensures per-workspace isolation
-  const composioUserId = `ws_${workspaceId}_user_${userId}`;
-  const session = await composio.create(composioUserId, {
-    manageConnections: true,
-  });
-  return { session, composioUserId };
-}
+export type ComposioToolkit = 'facebook' | 'instagram';
 
-/**
- * Get or create a Composio session using a stored session ID.
- */
-export async function getOrCreateSession(workspaceId: string, userId: string) {
-  const composio = getComposio();
-  const composioUserId = `ws_${workspaceId}_user_${userId}`;
-  const session = await composio.create(composioUserId, {
-    manageConnections: true,
-  });
-  return { session, composioUserId };
+// ─── Composio User ID Helper ───
+// Uses workspace + user combo for per-workspace isolation
+
+export function getComposioUserId(workspaceId: string, userId: string): string {
+  return `ws_${workspaceId}_user_${userId}`;
 }
 
 // ─── OAuth Connection ───
 
-export type ComposioToolkit = 'facebook' | 'instagram';
-
 /**
  * Initiate OAuth flow for a toolkit (Facebook or Instagram).
- * Returns the redirect URL the user must visit to authenticate.
+ * Uses composio.toolkits.authorize() which returns a redirectUrl.
  */
 export async function initiateOAuth(
   workspaceId: string,
   userId: string,
   toolkit: ComposioToolkit
 ): Promise<{ redirectUrl: string; connectedAccountId: string }> {
-  const { session } = await createComposioSession(workspaceId, userId);
+  const composio = getComposio();
+  const composioUserId = getComposioUserId(workspaceId, userId);
 
-  // Encode workspace/user info in state so the callback knows who this is for
-  const stateParam = encodeURIComponent(JSON.stringify({ workspaceId, userId }));
-  const callbackUrl = `${process.env.NEXT_PUBLIC_BASE_URL || 'https://digiactiva-z.vercel.app'}/api/composio/callback?state=${stateParam}`;
-
-  const connectionRequest = await session.authorize(toolkit, {
-    callbackUrl,
-  });
+  // Use toolkits.authorize() — the v0.8.1 way to start OAuth
+  const connectionRequest = await composio.toolkits.authorize(composioUserId, toolkit);
 
   const redirectUrl = connectionRequest.redirectUrl || '';
-  const connectedAccountId = connectionRequest.connectedAccountId || '';
+  const connectedAccountId = connectionRequest.id || '';
+
+  console.log(`[COMPOSIO_OAUTH] Initiated for ${toolkit}, userId=${composioUserId}, redirectUrl=${redirectUrl?.substring(0, 50)}..., connectedAccountId=${connectedAccountId}`);
 
   return { redirectUrl, connectedAccountId };
 }
 
 /**
- * Check if a toolkit is connected for a given workspace.
+ * Check if a toolkit is connected for a given workspace/user.
+ * Uses composio.connectedAccounts.list() to find ACTIVE connections.
  */
 export async function checkIntegrationStatus(
   workspaceId: string,
   userId: string,
   toolkit: ComposioToolkit
-): Promise<{ connected: boolean; toolkit: string }> {
+): Promise<{ connected: boolean; toolkit: string; connectedAccountId?: string; accountName?: string }> {
   try {
-    const { session } = await createComposioSession(workspaceId, userId);
-    const toolkitsResult = await session.toolkits({ filter: [toolkit] });
+    const composio = getComposio();
+    const composioUserId = getComposioUserId(workspaceId, userId);
 
-    const items = toolkitsResult.items || [];
-    const tk = items.find((t) => t.slug === toolkit);
+    // List connected accounts for this user and toolkit with ACTIVE status
+    const accountsResult = await composio.connectedAccounts.list({
+      userIds: [composioUserId],
+      toolkitSlugs: [toolkit],
+      statuses: ['ACTIVE'],
+    });
 
-    const connected = tk?.connection?.isActive ?? false;
-    return { connected, toolkit };
+    const items = accountsResult.items || [];
+    const activeAccount = items.find((a: { status: string; toolkit: { slug: string } }) => a.status === 'ACTIVE');
+
+    if (activeAccount) {
+      return {
+        connected: true,
+        toolkit,
+        connectedAccountId: activeAccount.id,
+        accountName: activeAccount.wordId || activeAccount.alias || undefined,
+      };
+    }
+
+    // If no active accounts for this specific user, check all accounts for the toolkit
+    // (in case the user connected from a different userId in Composio)
+    const allAccountsResult = await composio.connectedAccounts.list({
+      toolkitSlugs: [toolkit],
+      statuses: ['ACTIVE'],
+    });
+
+    const allItems = allAccountsResult.items || [];
+    const anyActive = allItems.length > 0;
+
+    if (anyActive) {
+      // Found an active connection but not under this userId — return first active
+      const firstActive = allItems[0];
+      return {
+        connected: true,
+        toolkit,
+        connectedAccountId: firstActive.id,
+        accountName: firstActive.wordId || firstActive.alias || undefined,
+      };
+    }
+
+    return { connected: false, toolkit };
   } catch (error) {
     console.error('[COMPOSIO_STATUS_CHECK_ERROR]', error);
     return { connected: false, toolkit };
   }
 }
 
-// ─── Composio Tool Slugs (discovered via COMPOSIO_SEARCH_TOOLS) ───
+/**
+ * Get the connected account ID for a toolkit, needed for tool execution.
+ */
+export async function getConnectedAccountId(
+  workspaceId: string,
+  userId: string,
+  toolkit: ComposioToolkit
+): Promise<string | null> {
+  try {
+    const composio = getComposio();
+    const composioUserId = getComposioUserId(workspaceId, userId);
 
-// Facebook Messenger tools
+    // First try to find an account for this specific user
+    const accountsResult = await composio.connectedAccounts.list({
+      userIds: [composioUserId],
+      toolkitSlugs: [toolkit],
+      statuses: ['ACTIVE'],
+    });
+
+    const items = accountsResult.items || [];
+    const activeAccount = items.find((a: { status: string }) => a.status === 'ACTIVE');
+
+    if (activeAccount) {
+      return activeAccount.id;
+    }
+
+    // Fallback: find any active account for this toolkit
+    const allAccountsResult = await composio.connectedAccounts.list({
+      toolkitSlugs: [toolkit],
+      statuses: ['ACTIVE'],
+    });
+
+    const allItems = allAccountsResult.items || [];
+    if (allItems.length > 0) {
+      return allItems[0].id;
+    }
+
+    return null;
+  } catch (error) {
+    console.error('[COMPOSIO_GET_ACCOUNT_ID_ERROR]', error);
+    return null;
+  }
+}
+
+// ─── Composio Tool Slugs ───
+
 const FACEBOOK_TOOLS = {
   LIST_PAGES: 'FACEBOOK_LIST_MANAGED_PAGES',
   GET_CONVERSATIONS: 'FACEBOOK_GET_PAGE_CONVERSATIONS',
@@ -112,7 +178,6 @@ const FACEBOOK_TOOLS = {
   MARK_SEEN: 'FACEBOOK_MARK_MESSAGE_SEEN',
 } as const;
 
-// Instagram DM tools
 const INSTAGRAM_TOOLS = {
   LIST_CONVERSATIONS: 'INSTAGRAM_LIST_ALL_CONVERSATIONS',
   GET_CONVERSATION: 'INSTAGRAM_GET_CONVERSATION',
@@ -122,19 +187,37 @@ const INSTAGRAM_TOOLS = {
   GET_MESSENGER_PROFILE: 'INSTAGRAM_GET_MESSENGER_PROFILE',
 } as const;
 
-// ─── Triggers ───
-// NOTE: As of May 2026, Facebook and Instagram do NOT have native
-// Composio triggers. We use polling via the tools above instead.
-// If Composio adds trigger support later, we can activate them here.
-const TRIGGER_SLUGS: Record<ComposioToolkit, string[]> = {
-  facebook: [], // No native triggers yet
-  instagram: [], // No native triggers yet
-};
+// ─── Tool Execution ───
 
 /**
- * List available trigger types for a toolkit.
- * Useful for discovering what trigger slugs are available.
+ * Execute a Composio tool using the v0.8.1 API.
+ * Uses composio.tools.execute(slug, { connectedAccountId, ...params }).
  */
+export async function executeComposioTool(
+  toolSlug: string,
+  connectedAccountId: string,
+  params: Record<string, unknown> = {}
+) {
+  const composio = getComposio();
+  try {
+    const result = await composio.tools.execute(toolSlug, {
+      connectedAccountId,
+      ...params,
+    });
+    return result;
+  } catch (error) {
+    console.error(`[COMPOSIO_TOOL_EXECUTE_ERROR] ${toolSlug}:`, error);
+    throw error;
+  }
+}
+
+// ─── Triggers ───
+
+const TRIGGER_SLUGS: Record<ComposioToolkit, string[]> = {
+  facebook: [],
+  instagram: [],
+};
+
 export async function listTriggerTypes(toolkit?: ComposioToolkit) {
   const composio = getComposio();
   try {
@@ -148,15 +231,10 @@ export async function listTriggerTypes(toolkit?: ComposioToolkit) {
   }
 }
 
-/**
- * List all active trigger instances for a user/workspace.
- */
-export async function listActiveTriggers(composioUserId: string) {
+export async function listActiveTriggers() {
   const composio = getComposio();
   try {
-    const result = await composio.triggers.listActive({
-      connectedAccountIds: undefined,
-    });
+    const result = await composio.triggers.listActive();
     return result;
   } catch (error) {
     console.error('[COMPOSIO_LIST_ACTIVE_TRIGGERS_ERROR]', error);
@@ -164,25 +242,13 @@ export async function listActiveTriggers(composioUserId: string) {
   }
 }
 
-/**
- * Create a trigger instance for a toolkit.
- * This tells Composio to start listening for events (e.g. new messages)
- * and forward them to our webhook endpoint.
- *
- * @param composioUserId - The Composio user ID (ws_{workspaceId}_user_{userId})
- * @param toolkit - facebook or instagram
- * @param triggerSlug - The trigger type slug (e.g. FACEBOOK_MESSENGER_MESSAGE_RECEIVED)
- */
 export async function createTrigger(
   composioUserId: string,
-  toolkit: ComposioToolkit,
   triggerSlug: string
 ) {
   const composio = getComposio();
   try {
-    const result = await composio.triggers.create(composioUserId, triggerSlug, {
-      triggerConfig: {},
-    });
+    const result = await composio.triggers.create(composioUserId, triggerSlug);
     console.log(`[COMPOSIO_TRIGGER_CREATED] ${triggerSlug} for ${composioUserId}:`, result.id);
     return result;
   } catch (error) {
@@ -191,31 +257,25 @@ export async function createTrigger(
   }
 }
 
-/**
- * Setup all triggers for a toolkit after OAuth connection is complete.
- * Creates trigger instances for message events on Facebook/Instagram.
- */
 export async function setupTriggersForToolkit(
   workspaceId: string,
   userId: string,
   toolkit: ComposioToolkit
 ) {
-  const composioUserId = `ws_${workspaceId}_user_${userId}`;
+  const composioUserId = getComposioUserId(workspaceId, userId);
   const slugs = TRIGGER_SLUGS[toolkit];
   const results = [];
 
   for (const slug of slugs) {
     try {
-      const trigger = await createTrigger(composioUserId, toolkit, slug);
+      const trigger = await createTrigger(composioUserId, slug);
       results.push({ slug, success: true, triggerId: trigger.id });
     } catch (error) {
-      // Some trigger slugs may not exist for a given toolkit; log but don't fail
-      console.warn(`[COMPOSIO_TRIGGER_SETUP_WARN] Failed to create trigger ${slug}:`, error);
+      console.warn(`[COMPOSIO_TRIGGER_SETUP_WARN] Failed: ${slug}:`, error);
       results.push({ slug, success: false, error: String(error) });
     }
   }
 
-  // Store trigger IDs in our ComposioConnection record
   const successfulTriggers = results.filter(r => r.success);
   if (successfulTriggers.length > 0) {
     await upsertComposioConnection(workspaceId, userId, toolkit, {
@@ -230,52 +290,23 @@ export async function setupTriggersForToolkit(
   return results;
 }
 
-/**
- * Disable a trigger instance by ID.
- */
 export async function disableTrigger(triggerId: string) {
   const composio = getComposio();
-  try {
-    return await composio.triggers.disable(triggerId);
-  } catch (error) {
-    console.error('[COMPOSIO_DISABLE_TRIGGER_ERROR]', error);
-    throw error;
-  }
+  return composio.triggers.disable(triggerId);
 }
 
-/**
- * Enable a trigger instance by ID.
- */
 export async function enableTrigger(triggerId: string) {
   const composio = getComposio();
-  try {
-    return await composio.triggers.enable(triggerId);
-  } catch (error) {
-    console.error('[COMPOSIO_ENABLE_TRIGGER_ERROR]', error);
-    throw error;
-  }
+  return composio.triggers.enable(triggerId);
 }
 
-/**
- * Delete a trigger instance by ID.
- */
 export async function deleteTrigger(triggerId: string) {
   const composio = getComposio();
-  try {
-    return await composio.triggers.delete(triggerId);
-  } catch (error) {
-    console.error('[COMPOSIO_DELETE_TRIGGER_ERROR]', error);
-    throw error;
-  }
+  return composio.triggers.delete(triggerId);
 }
 
-// ─── Webhook Verification (SDK-based) ───
+// ─── Webhook Verification ───
 
-/**
- * Verify an incoming webhook from Composio using the SDK's built-in verification.
- * This validates the HMAC-SHA256 signature using the standard Composio format:
- * signature = HMAC-SHA256(webhookId.webhookTimestamp.payload, secret)
- */
 export async function verifyComposioWebhook(params: {
   payload: string;
   signature: string;
@@ -308,19 +339,12 @@ export async function verifyComposioWebhook(params: {
   }
 }
 
-/**
- * Legacy webhook signature verification for backwards compatibility.
- * Uses raw HMAC-SHA256.
- */
 export async function verifyWebhookSignature(
   signature: string,
   body: string
 ): boolean {
   const secret = process.env.COMPOSIO_WEBHOOK_SECRET;
-  if (!secret) {
-    console.error('[COMPOSIO_WEBHOOK_ERROR] No webhook secret configured');
-    return false;
-  }
+  if (!secret) return false;
 
   try {
     const crypto = await import('crypto');
@@ -329,49 +353,34 @@ export async function verifyWebhookSignature(
       .update(body)
       .digest('hex');
     return signature === expectedSig || signature === `sha256=${expectedSig}`;
-  } catch (error) {
-    console.error('[COMPOSIO_WEBHOOK_VERIFY_ERROR]', error);
+  } catch {
     return false;
   }
 }
 
 // ─── Message Fetching ───
 
-/**
- * Fetch recent messages from Facebook Messenger or Instagram DMs via Composio.
- */
 export async function fetchComposioMessages(
   workspaceId: string,
   userId: string,
   channel: 'messenger' | 'instagram',
-  limit: number = 20,
-  cursor?: string
+  limit: number = 20
 ) {
-  const { session } = await createComposioSession(workspaceId, userId);
+  const connectedAccountId = await getConnectedAccountId(workspaceId, userId, channel === 'messenger' ? 'facebook' : 'instagram');
+  if (!connectedAccountId) {
+    throw new Error(`No active ${channel} connection found`);
+  }
 
-  const listMessagesTool =
+  const toolSlug =
     channel === 'messenger'
       ? FACEBOOK_TOOLS.GET_CONVERSATIONS
       : INSTAGRAM_TOOLS.LIST_CONVERSATIONS;
 
-  try {
-    const result = await session.execute(listMessagesTool, {
-      limit,
-      ...(cursor ? { after: cursor } : {}),
-    });
-
-    return result;
-  } catch (error) {
-    console.error('[COMPOSIO_FETCH_MESSAGES_ERROR]', error);
-    throw error;
-  }
+  return executeComposioTool(toolSlug, connectedAccountId, { limit });
 }
 
 // ─── Message Sending ───
 
-/**
- * Send a message via Composio to Facebook Messenger or Instagram.
- */
 export async function sendComposioMessage(
   workspaceId: string,
   userId: string,
@@ -379,42 +388,36 @@ export async function sendComposioMessage(
   recipientId: string,
   content: string
 ) {
-  const { session } = await createComposioSession(workspaceId, userId);
+  const connectedAccountId = await getConnectedAccountId(workspaceId, userId, channel === 'messenger' ? 'facebook' : 'instagram');
+  if (!connectedAccountId) {
+    throw new Error(`No active ${channel} connection found`);
+  }
 
-  const sendTool =
+  const toolSlug =
     channel === 'messenger'
       ? FACEBOOK_TOOLS.SEND_MESSAGE
       : INSTAGRAM_TOOLS.SEND_TEXT;
 
-  try {
-    const result = await session.execute(sendTool, {
-      recipient_id: recipientId,
-      message: content,
-    });
-    return result;
-  } catch (error) {
-    console.error('[COMPOSIO_SEND_MESSAGE_ERROR]', error);
-    throw error;
-  }
+  return executeComposioTool(toolSlug, connectedAccountId, {
+    recipient_id: recipientId,
+    message: content,
+  });
 }
 
 // ─── Polling for New Messages ───
-// Since Facebook/Instagram don't have native Composio triggers,
-// we poll for new messages using the Composio tools.
 
-/**
- * Poll for new Facebook Messenger or Instagram messages.
- * Fetches recent conversations and messages, then syncs any new ones
- * into our database as Contact + Conversation + Message records.
- *
- * Returns the count of new messages synced.
- */
 export async function pollNewMessages(
   workspaceId: string,
   userId: string,
   channel: 'messenger' | 'instagram'
 ): Promise<{ newMessages: number; newContacts: number }> {
-  const { session } = await createComposioSession(workspaceId, userId);
+  const toolkit: ComposioToolkit = channel === 'messenger' ? 'facebook' : 'instagram';
+  const connectedAccountId = await getConnectedAccountId(workspaceId, userId, toolkit);
+
+  if (!connectedAccountId) {
+    console.warn(`[COMPOSIO_POLL] No active ${channel} connection for workspace ${workspaceId}`);
+    return { newMessages: 0, newContacts: 0 };
+  }
 
   let newMessages = 0;
   let newContacts = 0;
@@ -422,19 +425,19 @@ export async function pollNewMessages(
   try {
     if (channel === 'messenger') {
       // Step 1: List managed pages
-      const pagesResult = await session.execute(FACEBOOK_TOOLS.LIST_PAGES, {});
+      const pagesResult = await executeComposioTool(FACEBOOK_TOOLS.LIST_PAGES, connectedAccountId, {});
       const pages = pagesResult?.data?.data || [];
 
       for (const page of pages) {
         // Step 2: Get conversations for this page
-        const convosResult = await session.execute(FACEBOOK_TOOLS.GET_CONVERSATIONS, {
+        const convosResult = await executeComposioTool(FACEBOOK_TOOLS.GET_CONVERSATIONS, connectedAccountId, {
           page_id: page.id,
         });
         const conversations = convosResult?.data?.data || [];
 
         for (const convo of conversations.slice(0, 10)) {
           // Step 3: Get messages for this conversation
-          const msgsResult = await session.execute(FACEBOOK_TOOLS.GET_MESSAGES, {
+          const msgsResult = await executeComposioTool(FACEBOOK_TOOLS.GET_MESSAGES, connectedAccountId, {
             conversation_id: convo.id,
           });
           const messages = msgsResult?.data?.data || [];
@@ -446,25 +449,18 @@ export async function pollNewMessages(
 
             if (!senderId || !content) continue;
 
-            // Check for duplicate
             const existing = await db.message.findFirst({
               where: {
                 workspaceId,
-                metadata: {
-                  path: ['composioMessageId'],
-                  equals: msg.id,
-                },
+                metadata: { path: ['composioMessageId'], equals: msg.id },
               },
             });
 
             if (existing) continue;
 
-            // Create/update contact
             const contact = await findOrCreateContact(workspaceId, 'messenger', senderId, senderName);
-            // Create/update conversation
             const conversation = await findOrCreateConversation(workspaceId, contact.id, 'messenger');
 
-            // Save message
             await db.message.create({
               data: {
                 workspaceId,
@@ -479,12 +475,12 @@ export async function pollNewMessages(
                   senderName,
                   source: 'composio_poll',
                   pageId: page.id,
+                  connectedAccountId,
                 },
                 status: 'delivered',
               },
             });
 
-            // Update conversation
             await db.conversation.update({
               where: { id: conversation.id },
               data: {
@@ -499,13 +495,11 @@ export async function pollNewMessages(
         }
       }
     } else if (channel === 'instagram') {
-      // Step 1: List Instagram conversations
-      const convosResult = await session.execute(INSTAGRAM_TOOLS.LIST_CONVERSATIONS, {});
+      const convosResult = await executeComposioTool(INSTAGRAM_TOOLS.LIST_CONVERSATIONS, connectedAccountId, {});
       const conversations = convosResult?.data?.data || [];
 
       for (const convo of conversations.slice(0, 10)) {
-        // Step 2: Get messages for this conversation
-        const msgsResult = await session.execute(INSTAGRAM_TOOLS.LIST_MESSAGES, {
+        const msgsResult = await executeComposioTool(INSTAGRAM_TOOLS.LIST_MESSAGES, connectedAccountId, {
           conversation_id: convo.id,
         });
         const messages = msgsResult?.data?.data || [];
@@ -517,25 +511,18 @@ export async function pollNewMessages(
 
           if (!senderId || !content) continue;
 
-          // Check for duplicate
           const existing = await db.message.findFirst({
             where: {
               workspaceId,
-              metadata: {
-                path: ['composioMessageId'],
-                equals: msg.id,
-              },
+              metadata: { path: ['composioMessageId'], equals: msg.id },
             },
           });
 
           if (existing) continue;
 
-          // Create/update contact
           const contact = await findOrCreateContact(workspaceId, 'instagram', senderId, senderName);
-          // Create/update conversation
           const conversation = await findOrCreateConversation(workspaceId, contact.id, 'instagram');
 
-          // Save message
           await db.message.create({
             data: {
               workspaceId,
@@ -550,12 +537,12 @@ export async function pollNewMessages(
                 senderName,
                 source: 'composio_poll',
                 conversationId: convo.id,
+                connectedAccountId,
               },
               status: 'delivered',
             },
           });
 
-          // Update conversation
           await db.conversation.update({
             where: { id: conversation.id },
             data: {
@@ -583,9 +570,6 @@ export async function pollNewMessages(
 
 // ─── Database Helpers ───
 
-/**
- * Upsert a ComposioConnection record in our database.
- */
 export async function upsertComposioConnection(
   workspaceId: string,
   userId: string,
@@ -623,9 +607,6 @@ export async function upsertComposioConnection(
   });
 }
 
-/**
- * Find or create a Contact for an incoming Composio message.
- */
 export async function findOrCreateContact(
   workspaceId: string,
   channel: 'messenger' | 'instagram',
@@ -655,9 +636,6 @@ export async function findOrCreateContact(
   });
 }
 
-/**
- * Find or create a Conversation for an incoming message.
- */
 export async function findOrCreateConversation(
   workspaceId: string,
   contactId: string,
@@ -685,9 +663,6 @@ export async function findOrCreateConversation(
   });
 }
 
-/**
- * Get the channel type from a Composio toolkit name.
- */
 export function toolkitToChannel(toolkit: string): 'messenger' | 'instagram' | 'external' {
   if (toolkit === 'facebook') return 'messenger';
   if (toolkit === 'instagram') return 'instagram';

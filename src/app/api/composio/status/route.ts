@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
 
     const typedToolkit = toolkit as ComposioToolkit;
 
-    // Check via Composio SDK
+    // Check via Composio SDK v0.8.1
     const statusResult = await checkIntegrationStatus(
       auth.activeWorkspaceId,
       auth.userId,
@@ -51,13 +51,16 @@ export async function GET(request: NextRequest) {
     });
 
     // If Composio says connected but our DB doesn't reflect it, update
-    if (statusResult.connected && dbConnection && !dbConnection.connected) {
+    if (statusResult.connected) {
       await upsertComposioConnection(auth.activeWorkspaceId, auth.userId, typedToolkit, {
         connected: true,
+        accountId: statusResult.connectedAccountId,
+        accountName: statusResult.accountName,
         metadata: {
-          ...(dbConnection.metadata as Record<string, unknown>),
+          ...(dbConnection?.metadata as Record<string, unknown> || {}),
           status: 'active',
           connectedAt: new Date().toISOString(),
+          connectedAccountId: statusResult.connectedAccountId,
         },
       });
     }
@@ -65,6 +68,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       connected: statusResult.connected,
       toolkit: typedToolkit,
+      connectedAccountId: statusResult.connectedAccountId,
+      accountName: statusResult.accountName,
       dbRecord: dbConnection
         ? {
             id: dbConnection.id,
