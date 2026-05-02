@@ -33,18 +33,18 @@ async function seed() {
         name: 'DigiActiva Demo',
         slug: 'demo',
         plan: 'founder_full',
-        modules: JSON.stringify({
+        modules: {
           chat: true,
           whatsapp: true,
           crm: true,
           inbox: true,
           voice: true,
           copilot: true,
-        }),
-        branding: JSON.stringify({
+        },
+        branding: {
           color: '#10b981',
           nombre_negocio: 'DigiActiva',
-        }),
+        },
       },
     });
 
@@ -61,7 +61,7 @@ async function seed() {
       where: { id: user.id },
       data: {
         activeWorkspaceId: workspace.id,
-        workspaceIds: JSON.stringify([workspace.id]),
+        workspaceIds: [workspace.id],
       },
     });
 

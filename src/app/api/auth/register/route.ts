@@ -94,7 +94,7 @@ export async function POST(request: NextRequest) {
         where: { id: user.id },
         data: {
           activeWorkspaceId: workspace.id,
-          workspaceIds: JSON.stringify([workspace.id]),
+          workspaceIds: [workspace.id],
         },
       });
 

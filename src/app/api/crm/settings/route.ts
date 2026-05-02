@@ -40,23 +40,15 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Parse JSON fields
-    let metaMensual = { meta: 0, periodo: '' };
-    try {
-      metaMensual = JSON.parse(workspace.metaMensual);
-    } catch {
-      // Keep default
-    }
-
     return NextResponse.json({
       workspaceId: workspace.id,
       name: workspace.name,
       plan: workspace.plan,
-      metaMensual,
-      modules: (() => { try { return JSON.parse(workspace.modules); } catch { return {}; } })(),
-      agentPrompts: (() => { try { return JSON.parse(workspace.agentPrompts); } catch { return {}; } })(),
-      integrations: (() => { try { return JSON.parse(workspace.integrations); } catch { return {}; } })(),
-      branding: (() => { try { return JSON.parse(workspace.branding); } catch { return {}; } })(),
+      metaMensual: workspace.metaMensual || { meta: 0, periodo: '' },
+      modules: workspace.modules || {},
+      agentPrompts: workspace.agentPrompts || {},
+      integrations: workspace.integrations || {},
+      branding: workspace.branding || {},
       onboardingCompleted: workspace.onboardingCompleted,
     });
   } catch (error) {
@@ -99,10 +91,10 @@ export async function PUT(request: NextRequest) {
           { status: 400 }
         );
       }
-      updateData.metaMensual = JSON.stringify({
+      updateData.metaMensual = {
         meta: typeof metaMensual.meta === 'number' ? metaMensual.meta : 0,
         periodo: typeof metaMensual.periodo === 'string' ? metaMensual.periodo : '',
-      });
+      };
     }
 
     const updated = await db.workspace.update({
@@ -110,12 +102,7 @@ export async function PUT(request: NextRequest) {
       data: updateData,
     });
 
-    let parsedMetaMensual = { meta: 0, periodo: '' };
-    try {
-      parsedMetaMensual = JSON.parse(updated.metaMensual);
-    } catch {
-      // Keep default
-    }
+    const parsedMetaMensual = updated.metaMensual || { meta: 0, periodo: '' };
 
     return NextResponse.json({
       workspaceId: updated.id,

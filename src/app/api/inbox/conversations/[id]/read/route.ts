@@ -52,7 +52,7 @@ export async function POST(
 
     const parsed = {
       ...updated,
-      tags: JSON.parse(updated.tags || '[]'),
+      tags: updated.tags || [],
     };
 
     return NextResponse.json(parsed);

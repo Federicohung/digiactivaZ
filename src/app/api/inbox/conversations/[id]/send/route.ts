@@ -55,10 +55,10 @@ export async function POST(
         direction: 'outbound',
         content: content.trim(),
         conversationId: id,
-        metadata: JSON.stringify({
+        metadata: {
           sentBy: auth.userId,
           conversationId: id,
-        }),
+        },
         status: 'delivered',
       },
     });

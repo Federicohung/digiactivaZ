@@ -58,11 +58,11 @@ export async function GET(
     const items = hasMore ? messages.slice(0, limit) : messages;
     const nextCursor = hasMore ? items[items.length - 1].id : null;
 
-    // Parse metadata and reverse for chronological order
+    // metadata is already a native JS object for Json fields
     const parsed = items
       .map((m) => ({
         ...m,
-        metadata: JSON.parse(m.metadata || '{}'),
+        metadata: m.metadata || {},
       }))
       .reverse();
 

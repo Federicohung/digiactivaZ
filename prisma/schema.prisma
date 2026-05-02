@@ -1,13 +1,14 @@
 // DigiActiva - Multi-tenant SaaS Platform
-// Database Schema (SQLite via Prisma)
+// Database Schema (PostgreSQL via Neon + Prisma)
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ─── Users & Auth ───
@@ -17,7 +18,7 @@ model User {
   passwordHash       String
   name               String
   role               String   @default("workspace_admin") // founder_admin | workspace_admin
-  workspaceIds       String   @default("[]") // JSON array of workspace IDs
+  workspaceIds       Json     @default("[]") // JSON array of workspace IDs
   activeWorkspaceId  String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
@@ -33,8 +34,8 @@ model WorkspaceMember {
   role        String   @default("admin") // admin | member
   joinedAt    DateTime @default(now())
 
-  user        User      @relation(fields: [userId], references: [id])
-  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@unique([userId, workspaceId])
 }
@@ -45,11 +46,11 @@ model Workspace {
   name        String
   slug        String   @unique
   plan        String   @default("essential") // essential | premium | elite | founder_full
-  modules     String   @default("{}") // JSON: { chat: true, whatsapp: true, crm: true, inbox: true, voice: false, copilot: false }
-  integrations String  @default("{}") // JSON: { whatsapp: { ... }, resend: { ... } }
-  agentPrompts String  @default("{}") // JSON: { web_chat: { ... }, whatsapp: { ... }, voice: { ... } }
-  metaMensual  String  @default("{}") // JSON: { meta: 0, periodo: "" }
-  branding     String  @default("{}") // JSON: { color, logo_url, nombre_negocio }
+  modules     Json     @default("{}") // { chat: true, whatsapp: true, crm: true, inbox: true, voice: false, copilot: false }
+  integrations Json    @default("{}") // { whatsapp: { ... }, resend: { ... } }
+  agentPrompts Json    @default("{}") // { web_chat: { ... }, whatsapp: { ... }, voice: { ... } }
+  metaMensual  Json    @default("{}") // { meta: 0, periodo: "" }
+  branding     Json    @default("{}") // { color, logo_url, nombre_negocio }
   onboardingCompleted Boolean @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -84,7 +85,7 @@ model Contact {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  workspace       Workspace      @relation(fields: [workspaceId], references: [id])
+  workspace       Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   timeline        TimelineEvent[]
   messages        Message[]
   conversations   Conversation[]
@@ -100,11 +101,11 @@ model TimelineEvent {
   contactId   String
   tipo        String   // nota | mensaje | llamada | etapa_cambiada | ai_summary | email | whatsapp
   descripcion String
-  metadata    String   @default("{}") // JSON
+  metadata    Json     @default("{}")
   createdAt   DateTime @default(now())
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id])
-  contact     Contact   @relation(fields: [contactId], references: [id])
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact     Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, contactId])
 }
@@ -118,13 +119,13 @@ model Message {
   content        String
   sessionId      String?
   conversationId String?
-  metadata       String   @default("{}") // JSON
+  metadata       Json     @default("{}")
   status         String   @default("delivered") // sent | delivered | read | failed
   createdAt      DateTime @default(now())
 
-  workspace      Workspace    @relation(fields: [workspaceId], references: [id])
-  contact        Contact      @relation(fields: [contactId], references: [id])
-  conversation   Conversation? @relation(fields: [conversationId], references: [id])
+  workspace      Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact        Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, contactId])
   @@index([workspaceId, conversationId])
@@ -134,15 +135,15 @@ model ChatSession {
   id          String   @id @default(cuid())
   workspaceId String
   contactId   String?
-  messages    String   @default("[]") // JSON array of messages
-  leadData    String   @default("{}") // JSON
+  messages    Json     @default("[]") // JSON array of messages
+  leadData    Json     @default("{}")
   source      String   @default("web_chat")
   status      String   @default("active") // active | closed
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id])
-  contact     Contact?  @relation(fields: [contactId], references: [id])
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact     Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId])
 }
@@ -158,12 +159,12 @@ model Conversation {
   lastMessagePreview String?
   lastMessageAt     DateTime @default(now())
   assignedToUserId  String?
-  tags              String   @default("[]") // JSON array
+  tags              Json     @default("[]") // JSON array
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  workspace         Workspace @relation(fields: [workspaceId], references: [id])
-  contact           Contact   @relation(fields: [contactId], references: [id])
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact           Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
   messages          Message[]
 
   @@index([workspaceId])
@@ -181,7 +182,7 @@ model AiLog {
   contenido   String
   createdAt   DateTime @default(now())
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
 }
@@ -196,8 +197,6 @@ model Lead {
   servicioInteres String?
   createdAt       DateTime @default(now())
 
-  // no workspace relation for landing leads
-
   @@index([workspaceId])
 }
 
@@ -205,7 +204,7 @@ model Lead {
 model GlobalSetting {
   id    String @id @default(cuid())
   key   String @unique
-  value String @default("{}") // JSON
+  value Json   @default("{}")
 }
 
 // ─── Niche Templates ───
@@ -215,7 +214,7 @@ model NicheTemplate {
   slug        String   @unique
   description String
   nicho       String
-  prompts     String   @default("{}") // JSON: { web_chat: { ... }, whatsapp: { ... }, voice: { ... } }
-  modules     String   @default("{}") // JSON
+  prompts     Json     @default("{}")
+  modules     Json     @default("{}")
   createdAt   DateTime @default(now())
 }

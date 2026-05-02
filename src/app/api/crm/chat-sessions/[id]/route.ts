@@ -48,8 +48,8 @@ export async function GET(
 
     const parsed = {
       ...session,
-      messages: JSON.parse(session.messages || '[]'),
-      leadData: JSON.parse(session.leadData || '{}'),
+      messages: session.messages || [],
+      leadData: session.leadData || {},
     };
 
     return NextResponse.json(parsed);

@@ -17,13 +17,8 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Parse agent prompts for web_chat greeting
-    let agentPrompts: Record<string, unknown> = {};
-    try {
-      agentPrompts = JSON.parse(workspace.agentPrompts || '{}');
-    } catch {
-      agentPrompts = {};
-    }
+    // agentPrompts is a native JS object (Json field)
+    const agentPrompts = (workspace.agentPrompts as Record<string, unknown>) || {};
 
     const webChatPrompt = agentPrompts.web_chat as Record<string, unknown> | undefined;
     const greeting =

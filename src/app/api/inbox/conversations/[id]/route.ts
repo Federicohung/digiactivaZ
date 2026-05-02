@@ -49,7 +49,7 @@ export async function GET(
 
     const parsed = {
       ...conversation,
-      tags: JSON.parse(conversation.tags || '[]'),
+      tags: conversation.tags || [],
     };
 
     return NextResponse.json(parsed);

@@ -68,11 +68,11 @@ export async function PUT(
         contactId: id,
         tipo: 'etapa_cambiada',
         descripcion: `Etapa cambiada de "${previousEtapa}" a "${etapa}"`,
-        metadata: JSON.stringify({
+        metadata: {
           previousEtapa,
           newEtapa: etapa,
           changedBy: auth.userId,
-        }),
+        },
       },
     });
 

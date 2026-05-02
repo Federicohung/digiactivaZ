@@ -89,7 +89,7 @@ export async function POST(request: NextRequest) {
         contactId: contact.id,
         tipo: 'nota',
         descripcion: `Contacto creado: ${contact.nombre}`,
-        metadata: JSON.stringify({ action: 'contact_created', fuente: contact.fuente }),
+        metadata: { action: 'contact_created', fuente: contact.fuente },
       },
     });
 

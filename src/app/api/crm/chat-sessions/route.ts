@@ -37,11 +37,11 @@ export async function GET(request: NextRequest) {
     
     const contactMap = new Map(contacts.map(c => [c.id, c]));
 
-    // Parse JSON fields for each session
+    // Json fields already return native JS objects
     const parsed = sessions.map((s) => ({
       ...s,
-      messages: JSON.parse(s.messages || '[]'),
-      leadData: JSON.parse(s.leadData || '{}'),
+      messages: s.messages || [],
+      leadData: s.leadData || {},
       contact: s.contactId ? contactMap.get(s.contactId) || null : null,
     }));
 

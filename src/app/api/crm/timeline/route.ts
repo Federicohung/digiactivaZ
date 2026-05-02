@@ -77,7 +77,7 @@ export async function POST(request: NextRequest) {
         contactId,
         tipo,
         descripcion: descripcion.trim(),
-        metadata: metadata ? JSON.stringify(metadata) : '{}',
+        metadata: metadata || {},
       },
     });
 

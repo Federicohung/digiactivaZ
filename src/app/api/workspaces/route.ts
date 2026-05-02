@@ -110,17 +110,12 @@ export async function POST(request: NextRequest) {
     });
 
     if (user) {
-      let workspaceIds: string[] = [];
-      try {
-        workspaceIds = JSON.parse(user.workspaceIds);
-      } catch {
-        workspaceIds = [];
-      }
+      const workspaceIds = (user.workspaceIds as string[]) || [];
       workspaceIds.push(workspace.id);
 
       await db.user.update({
         where: { id: auth.userId },
-        data: { workspaceIds: JSON.stringify(workspaceIds) },
+        data: { workspaceIds },
       });
     }
 

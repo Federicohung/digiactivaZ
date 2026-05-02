@@ -57,12 +57,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    let agentPrompts: Record<string, Record<string, string>>;
-    try {
-      agentPrompts = JSON.parse(workspace.agentPrompts);
-    } catch {
-      agentPrompts = {};
-    }
+    const agentPrompts = (workspace.agentPrompts as Record<string, Record<string, string>>) || {};
 
     // Fill in defaults for missing channels
     for (const channel of VALID_CHANNELS) {
@@ -130,12 +125,7 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    let agentPrompts: Record<string, Record<string, string>>;
-    try {
-      agentPrompts = JSON.parse(workspace.agentPrompts);
-    } catch {
-      agentPrompts = {};
-    }
+    const agentPrompts = (workspace.agentPrompts as Record<string, Record<string, string>>) || {};
 
     // Ensure channel exists with defaults
     if (!agentPrompts[channel]) {
@@ -152,7 +142,7 @@ export async function PUT(request: NextRequest) {
     // Save
     await db.workspace.update({
       where: { id: auth.activeWorkspaceId },
-      data: { agentPrompts: JSON.stringify(agentPrompts) },
+      data: { agentPrompts },
     });
 
     return NextResponse.json({
@@ -200,12 +190,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let agentPrompts: Record<string, Record<string, string>>;
-    try {
-      agentPrompts = JSON.parse(workspace.agentPrompts);
-    } catch {
-      agentPrompts = {};
-    }
+    const agentPrompts = (workspace.agentPrompts as Record<string, Record<string, string>>) || {};
 
     if (channel && VALID_CHANNELS.includes(channel)) {
       // Reset specific channel
@@ -219,7 +204,7 @@ export async function POST(request: NextRequest) {
 
     await db.workspace.update({
       where: { id: auth.activeWorkspaceId },
-      data: { agentPrompts: JSON.stringify(agentPrompts) },
+      data: { agentPrompts },
     });
 
     return NextResponse.json({

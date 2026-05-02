@@ -29,13 +29,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Parse agent prompts for web_chat
-    let agentPrompts: Record<string, unknown> = {};
-    try {
-      agentPrompts = JSON.parse(workspace.agentPrompts || '{}');
-    } catch {
-      agentPrompts = {};
-    }
+    // Parse agent prompts for web_chat (Json field returns native JS object)
+    const agentPrompts = (workspace.agentPrompts as Record<string, unknown>) || {};
 
     const webChatPrompt = agentPrompts.web_chat as Record<string, unknown> | undefined;
     const systemPrompt =
@@ -59,11 +54,7 @@ IMPORTANTE: No inventes información. Solo usa lo que el visitante te dice. Resp
         where: { id: sessionId },
       });
       if (session && session.workspaceId === workspace.id) {
-        try {
-          sessionMessages = JSON.parse(session.messages || '[]');
-        } catch {
-          sessionMessages = [];
-        }
+        sessionMessages = (session.messages as Array<{ role: string; content: string }>) || [];
       } else {
         session = null;
       }
@@ -86,8 +77,8 @@ IMPORTANTE: No inventes información. Solo usa lo que el visitante te dice. Resp
           contactId: placeholderContact.id,
           source: 'web_chat',
           status: 'active',
-          messages: '[]',
-          leadData: '{}',
+          messages: [],
+          leadData: {},
         },
       });
 
@@ -101,7 +92,7 @@ IMPORTANTE: No inventes información. Solo usa lo que el visitante te dice. Resp
           status: 'open',
           unreadCount: 0,
           lastMessageAt: new Date(),
-          tags: '[]',
+          tags: [],
         },
       });
     }
@@ -139,7 +130,7 @@ IMPORTANTE: No inventes información. Solo usa lo que el visitante te dice. Resp
     await db.chatSession.update({
       where: { id: session.id },
       data: {
-        messages: JSON.stringify(sessionMessages),
+        messages: sessionMessages,
       },
     });
 
@@ -152,7 +143,7 @@ IMPORTANTE: No inventes información. Solo usa lo que el visitante te dice. Resp
         direction: 'inbound',
         content: message.trim(),
         sessionId: session.id,
-        metadata: JSON.stringify({ sessionId: session.id }),
+        metadata: { sessionId: session.id },
       },
     });
 
@@ -165,7 +156,7 @@ IMPORTANTE: No inventes información. Solo usa lo que el visitante te dice. Resp
         direction: 'outbound',
         content: String(reply),
         sessionId: session.id,
-        metadata: JSON.stringify({ sessionId: session.id }),
+        metadata: { sessionId: session.id },
       },
     });
 
@@ -225,14 +216,14 @@ Responde SOLO con el JSON, sin texto adicional.`,
         const jsonMatch = String(extractResult).match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           const extracted = JSON.parse(jsonMatch[0]);
-          const currentLeadData = JSON.parse(session.leadData || '{}');
+          const currentLeadData = (session.leadData as Record<string, unknown>) || {};
           const mergedLeadData = { ...currentLeadData, ...extracted };
 
           // Update session lead data
           await db.chatSession.update({
             where: { id: session.id },
             data: {
-              leadData: JSON.stringify(mergedLeadData),
+              leadData: mergedLeadData,
             },
           });
 
@@ -260,11 +251,11 @@ Responde SOLO con el JSON, sin texto adicional.`,
                 contactId,
                 tipo: 'nota',
                 descripcion: `Datos actualizados desde chat: ${Object.keys(updateData).join(', ')}`,
-                metadata: JSON.stringify({
+                metadata: {
                   source: 'web_chat',
                   sessionId: session.id,
                   extractedFields: Object.keys(updateData),
-                }),
+                },
               },
             });
           }

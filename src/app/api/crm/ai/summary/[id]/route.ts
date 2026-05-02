@@ -124,7 +124,7 @@ Sé conciso pero informativo. Máximo 500 palabras.`,
         contactId: id,
         tipo: 'ai_summary',
         descripcion: 'Resumen IA generado',
-        metadata: JSON.stringify({ summaryLength: String(summary).length }),
+        metadata: { summaryLength: String(summary).length },
       },
     });
 

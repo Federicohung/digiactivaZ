@@ -62,10 +62,10 @@ export async function GET(request: NextRequest) {
     const items = hasMore ? conversations.slice(0, limit) : conversations;
     const nextCursor = hasMore ? items[items.length - 1].id : null;
 
-    // Parse tags JSON for each conversation
+    // tags is already a native JS object for Json fields
     const parsed = items.map((c) => ({
       ...c,
-      tags: JSON.parse(c.tags || '[]'),
+      tags: c.tags || [],
     }));
 
     return NextResponse.json({

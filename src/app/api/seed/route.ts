@@ -41,19 +41,19 @@ export async function GET() {
           name: 'DigiActiva Demo',
           slug: 'demo',
           plan: 'founder_full',
-          modules: JSON.stringify({
+          modules: {
             chat: true,
             whatsapp: true,
             crm: true,
             inbox: true,
             voice: true,
             copilot: true,
-          }),
-          branding: JSON.stringify({
+          },
+          branding: {
             color: '#10b981',
             nombre_negocio: 'DigiActiva',
-          }),
-          metaMensual: JSON.stringify({ meta: 5000000, periodo: '2025-01' }),
+          },
+          metaMensual: { meta: 5000000, periodo: '2025-01' },
         },
       });
 
@@ -70,7 +70,7 @@ export async function GET() {
         where: { id: user.id },
         data: {
           activeWorkspaceId: workspace.id,
-          workspaceIds: JSON.stringify([workspace.id]),
+          workspaceIds: [workspace.id],
         },
       });
 
@@ -116,7 +116,7 @@ export async function GET() {
             contactId: contact.id,
             tipo: 'nota',
             descripcion: `Contacto creado: ${contact.nombre} - ${contact.empresa}`,
-            metadata: JSON.stringify({ action: 'contact_created', fuente: contact.fuente }),
+            metadata: { action: 'contact_created', fuente: contact.fuente },
           },
         });
       }
@@ -143,7 +143,7 @@ export async function GET() {
               'Me gustaría saber sobre la integración con WhatsApp',
             ][i],
             lastMessageAt: new Date(Date.now() - i * 3600000),
-            tags: JSON.stringify(['lead', channel === 'whatsapp' ? 'whatsapp' : 'web']),
+            tags: ['lead', channel === 'whatsapp' ? 'whatsapp' : 'web'],
           },
         });
 
@@ -173,7 +173,7 @@ export async function GET() {
                 direction: msg.direction,
                 content: msg.content,
                 conversationId: conversation.id,
-                metadata: JSON.stringify({}),
+                metadata: {},
                 status: 'delivered',
               },
             });
@@ -190,13 +190,13 @@ export async function GET() {
             contactId: contact.id,
             source: i % 2 === 0 ? 'web_chat' : 'whatsapp',
             status: i < 3 ? 'active' : 'closed',
-            messages: JSON.stringify([
+            messages: [
               { role: 'user', content: `Hola, necesito información sobre sus servicios`, timestamp: new Date(Date.now() - 86400000).toISOString() },
               { role: 'assistant', content: `¡Hola! Soy el asistente virtual de DigiActiva. Con gusto te ayudo. ¿Qué tipo de negocio tienes?`, timestamp: new Date(Date.now() - 86300000).toISOString() },
               { role: 'user', content: `Tengo un negocio de ${contact.empresa}`, timestamp: new Date(Date.now() - 86200000).toISOString() },
               { role: 'assistant', content: `¡Excelente! Para negocios como el tuyo, nuestro plan Premium es ideal. Incluye chat IA, CRM y WhatsApp Business. ¿Te gustaría saber más?`, timestamp: new Date(Date.now() - 86100000).toISOString() },
-            ]),
-            leadData: JSON.stringify({ nombre: contact.nombre, empresa: contact.empresa, email: contact.email }),
+            ],
+            leadData: { nombre: contact.nombre, empresa: contact.empresa, email: contact.email },
           },
         });
       }

@@ -43,10 +43,10 @@ export async function GET(
       orderBy: { createdAt: 'asc' },
     });
 
-    // Parse metadata JSON for each message
+    // metadata is already a native JS object for Json fields
     const parsed = messages.map((m) => ({
       ...m,
-      metadata: JSON.parse(m.metadata || '{}'),
+      metadata: m.metadata || {},
     }));
 
     return NextResponse.json(parsed);

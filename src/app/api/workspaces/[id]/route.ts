@@ -55,25 +55,16 @@ export async function GET(
       );
     }
 
-    // Parse JSON fields safely
-    const safeParse = (jsonStr: string) => {
-      try {
-        return JSON.parse(jsonStr);
-      } catch {
-        return {};
-      }
-    };
-
     return NextResponse.json({
       id: workspace.id,
       name: workspace.name,
       slug: workspace.slug,
       plan: workspace.plan,
-      modules: safeParse(workspace.modules),
-      integrations: safeParse(workspace.integrations),
-      agentPrompts: safeParse(workspace.agentPrompts),
-      metaMensual: safeParse(workspace.metaMensual),
-      branding: safeParse(workspace.branding),
+      modules: workspace.modules || {},
+      integrations: workspace.integrations || {},
+      agentPrompts: workspace.agentPrompts || {},
+      metaMensual: workspace.metaMensual || {},
+      branding: workspace.branding || {},
       onboardingCompleted: workspace.onboardingCompleted,
       members: workspace.members.map((m) => ({
         id: m.id,
@@ -139,19 +130,19 @@ export async function PUT(
     }
 
     if (body.modules !== undefined) {
-      updateData.modules = JSON.stringify(body.modules);
+      updateData.modules = body.modules;
     }
 
     if (body.integrations !== undefined) {
-      updateData.integrations = JSON.stringify(body.integrations);
+      updateData.integrations = body.integrations;
     }
 
     if (body.agentPrompts !== undefined) {
-      updateData.agentPrompts = JSON.stringify(body.agentPrompts);
+      updateData.agentPrompts = body.agentPrompts;
     }
 
     if (body.branding !== undefined) {
-      updateData.branding = JSON.stringify(body.branding);
+      updateData.branding = body.branding;
     }
 
     if (body.onboardingCompleted !== undefined) {
@@ -159,7 +150,7 @@ export async function PUT(
     }
 
     if (body.metaMensual !== undefined) {
-      updateData.metaMensual = JSON.stringify(body.metaMensual);
+      updateData.metaMensual = body.metaMensual;
     }
 
     const updated = await db.workspace.update({
@@ -167,24 +158,16 @@ export async function PUT(
       data: updateData,
     });
 
-    const safeParse = (jsonStr: string) => {
-      try {
-        return JSON.parse(jsonStr);
-      } catch {
-        return {};
-      }
-    };
-
     return NextResponse.json({
       id: updated.id,
       name: updated.name,
       slug: updated.slug,
       plan: updated.plan,
-      modules: safeParse(updated.modules),
-      integrations: safeParse(updated.integrations),
-      agentPrompts: safeParse(updated.agentPrompts),
-      metaMensual: safeParse(updated.metaMensual),
-      branding: safeParse(updated.branding),
+      modules: updated.modules || {},
+      integrations: updated.integrations || {},
+      agentPrompts: updated.agentPrompts || {},
+      metaMensual: updated.metaMensual || {},
+      branding: updated.branding || {},
       onboardingCompleted: updated.onboardingCompleted,
       updatedAt: updated.updatedAt,
     });
