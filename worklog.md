@@ -179,3 +179,30 @@ Stage Summary:
 - System fully operational in production
 - Next step for user: Connect Facebook/Instagram accounts via OAuth URLs
 - Webhook URL needs manual registration at https://app.composio.dev → Settings
+---
+Task ID: 1
+Agent: Main Agent
+Task: Fix 404 error after Facebook/Instagram OAuth connection in Composio
+
+Work Log:
+- Analyzed user's screenshot showing 404 error after connecting FB/IG
+- Discovered the OAuth callback URL (/api/composio/callback) did not exist as a route
+- Created /api/composio/callback/route.ts with GET and POST handlers
+- GET handler: receives OAuth redirect from Composio, updates DB, verifies connection, sets up triggers, redirects to CRM
+- POST handler: handles Composio v3 POST-style callbacks
+- Updated initiateOAuth() in composio.ts to pass state parameter (workspaceId/userId) in callback URL
+- Completely rewrote IntegracionesSection in CRM page with functional FB/IG integration:
+  - Facebook Messenger and Instagram DM cards with connect buttons
+  - Real-time connection status checking via /api/composio/status
+  - OAuth flow that opens in new tab and polls for connection completion
+  - Message sync button for connected accounts
+  - URL parameter handling for OAuth callback results
+  - Coming soon cards for WhatsApp, Email, ElevenLabs
+- Built and pushed to GitHub, verified deployment on Vercel
+
+Stage Summary:
+- Created: src/app/api/composio/callback/route.ts (OAuth callback handler)
+- Modified: src/lib/composio.ts (added state param to callback URL)
+- Modified: src/app/crm/page.tsx (rewrote IntegracionesSection)
+- Deployed to: digiactiva-z.vercel.app
+- All Composio endpoints verified working
