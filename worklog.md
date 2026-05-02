@@ -266,3 +266,32 @@ Stage Summary:
 - Build passes successfully
 - Vercel deployment is LIVE at digiactiva-z.vercel.app
 - Key improvement: Even if Composio callback doesn't reach our server, the status check will now detect the connection via the Composio API and auto-update our DB
+
+---
+Task ID: inbox-redesign
+Agent: main
+Task: Redesign Inbox (Bandeja) with modern UI, channel filters, Composio sync
+
+Work Log:
+- Analyzed current BandejaSection code (basic 3-col layout, no filters, overflow issues)
+- Reviewed inbox API endpoints (conversations, messages, send, read, summary)
+- Created new API endpoint: POST /api/inbox/sync for pulling Composio messages
+- Completely rewrote BandejaSection with:
+  - Channel filter tabs (Todos, Messenger, Instagram, Web Chat) with unread counts
+  - 3-column layout (320px/flex/280px) with independent scrolling
+  - Color-coded channels (Messenger=blue, Instagram=pink/gradient, Web=gray, WhatsApp=green)
+  - Search input in conversation list
+  - Modern chat bubbles (rounded-2xl with squared bottom corners)
+  - Chat header with channel badge + Composio badge
+  - Contact sidebar with etapa badge, channel info, "Ver en CRM" button
+  - Sync button that calls POST /api/inbox/sync to pull FB/IG messages
+  - Empty states with illustration icons
+  - Custom thin scrollbars per column
+  - onNavigate prop for cross-section navigation
+- Updated parent component to pass onNavigate={setActiveSection}
+- Build successful, pushed to GitHub, Vercel deployment READY
+
+Stage Summary:
+- BandejaSection fully redesigned with modern SaaS-style UI
+- New /api/inbox/sync endpoint for Composio message synchronization
+- Deployed at digiactiva-z.vercel.app
