@@ -284,11 +284,17 @@ export async function executeComposioTool(
 ) {
   const composio = getComposio();
   try {
-    const result = await composio.tools.execute(toolSlug, {
+    const executeParams: Record<string, unknown> = {
       connectedAccountId,
       dangerouslySkipVersionCheck: true,
-      arguments: Object.keys(params).length > 0 ? params : undefined,
-    });
+    };
+    // Always pass arguments (never text) to avoid "Only one of text or arguments" error
+    if (Object.keys(params).length > 0) {
+      executeParams.arguments = params;
+    } else {
+      executeParams.arguments = {};
+    }
+    const result = await composio.tools.execute(toolSlug, executeParams);
     return result;
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
