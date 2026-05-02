@@ -270,21 +270,12 @@ const INSTAGRAM_TOOLS = {
   GET_MESSENGER_PROFILE: 'INSTAGRAM_GET_MESSENGER_PROFILE',
 } as const;
 
-// Tool slugs with @latest version suffix to avoid "Toolkit version not specified" error
-const FACEBOOK_TOOLS_V = Object.fromEntries(
-  Object.entries(FACEBOOK_TOOLS).map(([k, v]) => [k, `${v}@latest`])
-) as Record<keyof typeof FACEBOOK_TOOLS, string>;
-
-const INSTAGRAM_TOOLS_V = Object.fromEntries(
-  Object.entries(INSTAGRAM_TOOLS).map(([k, v]) => [k, `${v}@latest`])
-) as Record<keyof typeof INSTAGRAM_TOOLS, string>;
-
 // ─── Tool Execution ───
 
 /**
  * Execute a Composio tool using the v0.8.1 API.
- * Uses composio.tools.execute(slug, { connectedAccountId, ...params }).
- * The slug format can include version: TOOL_SLUG@VERSION
+ * Uses composio.tools.execute(slug, { connectedAccountId, version, ...params }).
+ * The version parameter defaults to 'latest' to avoid "Toolkit version not specified" error.
  */
 export async function executeComposioTool(
   toolSlug: string,
@@ -295,7 +286,8 @@ export async function executeComposioTool(
   try {
     const result = await composio.tools.execute(toolSlug, {
       connectedAccountId,
-      ...params,
+      version: 'latest',
+      arguments: Object.keys(params).length > 0 ? params : undefined,
     });
     return result;
   } catch (error) {
@@ -466,8 +458,8 @@ export async function fetchComposioMessages(
 
   const toolSlug =
     channel === 'messenger'
-      ? FACEBOOK_TOOLS_V.GET_CONVERSATIONS
-      : INSTAGRAM_TOOLS_V.LIST_CONVERSATIONS;
+      ? FACEBOOK_TOOLS.GET_CONVERSATIONS
+      : INSTAGRAM_TOOLS.LIST_CONVERSATIONS;
 
   return executeComposioTool(toolSlug, connectedAccountId, { limit });
 }
@@ -488,8 +480,8 @@ export async function sendComposioMessage(
 
   const toolSlug =
     channel === 'messenger'
-      ? FACEBOOK_TOOLS_V.SEND_MESSAGE
-      : INSTAGRAM_TOOLS_V.SEND_TEXT;
+      ? FACEBOOK_TOOLS.SEND_MESSAGE
+      : INSTAGRAM_TOOLS.SEND_TEXT;
 
   return executeComposioTool(toolSlug, connectedAccountId, {
     recipient_id: recipientId,
@@ -518,7 +510,7 @@ export async function pollNewMessages(
   try {
     if (channel === 'messenger') {
       // Step 1: List managed pages
-      const pagesResult = await executeComposioTool(FACEBOOK_TOOLS_V.LIST_PAGES, connectedAccountId, {});
+      const pagesResult = await executeComposioTool(FACEBOOK_TOOLS.LIST_PAGES, connectedAccountId, {});
       const pages = pagesResult?.data?.data || [];
 
       // Save the first page name to the connection for display in the inbox
@@ -539,14 +531,14 @@ export async function pollNewMessages(
 
       for (const page of pages) {
         // Step 2: Get conversations for this page
-        const convosResult = await executeComposioTool(FACEBOOK_TOOLS_V.GET_CONVERSATIONS, connectedAccountId, {
+        const convosResult = await executeComposioTool(FACEBOOK_TOOLS.GET_CONVERSATIONS, connectedAccountId, {
           page_id: page.id,
         });
         const conversations = convosResult?.data?.data || [];
 
         for (const convo of conversations.slice(0, 10)) {
           // Step 3: Get messages for this conversation
-          const msgsResult = await executeComposioTool(FACEBOOK_TOOLS_V.GET_MESSAGES, connectedAccountId, {
+          const msgsResult = await executeComposioTool(FACEBOOK_TOOLS.GET_MESSAGES, connectedAccountId, {
             conversation_id: convo.id,
           });
           const messages = msgsResult?.data?.data || [];
@@ -604,12 +596,12 @@ export async function pollNewMessages(
         }
       }
     } else if (channel === 'instagram') {
-      const convosResult = await executeComposioTool(INSTAGRAM_TOOLS_V.LIST_CONVERSATIONS, connectedAccountId, {});
+      const convosResult = await executeComposioTool(INSTAGRAM_TOOLS.LIST_CONVERSATIONS, connectedAccountId, {});
       const conversations = convosResult?.data?.data || [];
 
       // Try to get the Instagram profile name for display in the inbox
       try {
-        const profileResult = await executeComposioTool(INSTAGRAM_TOOLS_V.GET_MESSENGER_PROFILE, connectedAccountId, {});
+        const profileResult = await executeComposioTool(INSTAGRAM_TOOLS.GET_MESSENGER_PROFILE, connectedAccountId, {});
         const profileName = profileResult?.data?.name || profileResult?.data?.data?.name;
         if (profileName) {
           await upsertComposioConnection(workspaceId, userId, 'instagram', {
@@ -625,7 +617,7 @@ export async function pollNewMessages(
       } catch { /* silent - profile fetch may fail */ }
 
       for (const convo of conversations.slice(0, 10)) {
-        const msgsResult = await executeComposioTool(INSTAGRAM_TOOLS_V.LIST_MESSAGES, connectedAccountId, {
+        const msgsResult = await executeComposioTool(INSTAGRAM_TOOLS.LIST_MESSAGES, connectedAccountId, {
           conversation_id: convo.id,
         });
         const messages = msgsResult?.data?.data || [];
