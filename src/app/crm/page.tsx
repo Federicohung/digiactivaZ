@@ -356,9 +356,9 @@ export default function CRMPage() {
       </Sheet>
 
       {/* Main Content */}
-      <div className="flex-1 lg:ml-64">
+      <div className="flex-1 lg:ml-64 flex flex-col h-screen">
         {/* Top Bar */}
-        <header className="sticky top-0 z-20 bg-white border-b border-gray-200 px-4 lg:px-6 h-14 flex items-center justify-between">
+        <header className="shrink-0 z-20 bg-white border-b border-gray-200 px-4 lg:px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setSidebarOpen(true)}>
               <Menu className="w-5 h-5" />
@@ -378,7 +378,7 @@ export default function CRMPage() {
         </header>
 
         {/* Section Content */}
-        <main className="p-4 lg:p-6">
+        <main className={`flex-1 min-h-0 overflow-hidden ${activeSection === 'bandeja' ? 'p-0' : 'p-4 lg:p-6'}`}>
           {activeSection === 'hoy' && <HoySection token={token} onNavigate={setActiveSection} />}
           {activeSection === 'pipeline' && <PipelineSection token={token} />}
           {activeSection === 'contactos' && <ContactosSection token={token} />}
@@ -1503,32 +1503,89 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
   const [messages, setMessages] = useState<Message[]>([])
   const [sendText, setSendText] = useState('')
   const [loading, setLoading] = useState(true)
-  const [convRefresh, setConvRefresh] = useState(0)
   const [searchQuery, setSearchQuery] = useState('')
   const [activeFilter, setActiveFilter] = useState<FilterTab>('all')
   const [syncing, setSyncing] = useState(false)
   const [msgLoading, setMsgLoading] = useState(false)
+  const [connectedProfiles, setConnectedProfiles] = useState<Array<{ toolkit: string; connected: boolean; accountName: string | null; pageName: string | null }>>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const chatScrollRef = useRef<HTMLDivElement>(null)
+  const hasAutoSynced = useRef(false)
+  const hasFetchedConnections = useRef(false)
+  const isMounted = useRef(true)
 
-  const fetchConversations = useCallback(() => setConvRefresh(k => k + 1), [])
-
-  /* ── Fetch conversations ── */
+  /* ── Load connected profiles ── */
   useEffect(() => {
-    let cancelled = false
-    setLoading(true)
+    if (hasFetchedConnections.current) return
+    hasFetchedConnections.current = true
+    apiFetch('/api/composio/connections', token)
+      .then(r => r.json())
+      .then(data => {
+        if (isMounted.current && data.connections) {
+          setConnectedProfiles(data.connections)
+        }
+      })
+      .catch(() => {})
+    return () => { isMounted.current = false }
+  }, [token])
+
+  /* ── Fetch conversations (safe, no loop) ── */
+  const loadConversations = useCallback(async () => {
     const params = new URLSearchParams()
     if (activeFilter !== 'all') params.set('channel', activeFilter)
     const qs = params.toString() ? `?${params.toString()}` : ''
-    apiFetch(`/api/inbox/conversations${qs}`, token)
-      .then(r => r.json())
-      .then(data => { if (!cancelled && data.conversations) setConversations(data.conversations) })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [token, convRefresh, activeFilter])
+    try {
+      const res = await apiFetch(`/api/inbox/conversations${qs}`, token)
+      const data = await res.json()
+      if (isMounted.current && data.conversations) {
+        setConversations(data.conversations)
+      }
+    } catch {
+      // silent
+    }
+  }, [token, activeFilter])
 
-  /* ── Fetch messages ── */
+  /* ── Initial load + auto-sync on first mount ── */
+  useEffect(() => {
+    let cancelled = false
+    const init = async () => {
+      setLoading(true)
+      // Load conversations first
+      const params = new URLSearchParams()
+      if (activeFilter !== 'all') params.set('channel', activeFilter)
+      const qs = params.toString() ? `?${params.toString()}` : ''
+      try {
+        const res = await apiFetch(`/api/inbox/conversations${qs}`, token)
+        const data = await res.json()
+        if (!cancelled && data.conversations) setConversations(data.conversations)
+      } catch { /* silent */ }
+      setLoading(false)
+
+      // Auto-sync from Composio on first load (only once)
+      if (!hasAutoSynced.current) {
+        hasAutoSynced.current = true
+        try {
+          const syncRes = await apiFetch('/api/inbox/sync', token, { method: 'POST', body: JSON.stringify({}) })
+          const syncData = await syncRes.json()
+          if (!cancelled && syncData.ok && syncData.totalSynced > 0) {
+            // Reload conversations if new messages were synced
+            const res2 = await apiFetch(`/api/inbox/conversations${qs}`, token)
+            const data2 = await res2.json()
+            if (!cancelled && data2.conversations) setConversations(data2.conversations)
+            // Refresh connected profiles after sync
+            const connRes = await apiFetch('/api/composio/connections', token)
+            const connData = await connRes.json()
+            if (!cancelled && connData.connections) setConnectedProfiles(connData.connections)
+          }
+        } catch { /* silent */ }
+      }
+    }
+    init()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, activeFilter])
+
+  /* ── Fetch messages when selecting a conversation (safe, no loop) ── */
   useEffect(() => {
     if (!selectedId) return
     let cancelled = false
@@ -1539,12 +1596,19 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
       .catch(() => {})
       .finally(() => { if (!cancelled) setMsgLoading(false) })
 
-    // Mark as read
+    // Mark as read (fire and forget, no re-fetch that would cause loop)
     apiFetch(`/api/inbox/conversations/${selectedId}/read`, token, { method: 'POST' })
-      .then(() => fetchConversations())
+      .then(() => {
+        // Silently update unread count locally without full re-fetch
+        if (!cancelled) {
+          setConversations(prev => prev.map(c =>
+            c.id === selectedId ? { ...c, unreadCount: 0 } : c
+          ))
+        }
+      })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [selectedId, token, convRefresh])
+  }, [selectedId, token])
 
   /* ── Auto-scroll ── */
   useEffect(() => {
@@ -1563,10 +1627,11 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
         method: 'POST',
         body: JSON.stringify({ content: text }),
       })
+      // Reload messages and conversations
       const res = await apiFetch(`/api/inbox/conversations/${selectedId}/messages`, token)
       const data = await res.json()
       if (data.messages) setMessages(data.messages)
-      fetchConversations()
+      loadConversations()
     } catch {
       toast.error('Error al enviar mensaje')
     }
@@ -1580,12 +1645,16 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
       const data = await res.json()
       if (data.ok) {
         toast.success(`Sincronización completa — ${data.totalSynced ?? 0} mensajes nuevos`)
-        fetchConversations()
+        loadConversations()
         if (selectedId) {
           const msgRes = await apiFetch(`/api/inbox/conversations/${selectedId}/messages`, token)
           const msgData = await msgRes.json()
           if (msgData.messages) setMessages(msgData.messages)
         }
+        // Refresh connected profiles
+        const connRes = await apiFetch('/api/composio/connections', token)
+        const connData = await connRes.json()
+        if (connData.connections) setConnectedProfiles(connData.connections)
       } else {
         toast.error(data.error || 'Error en sincronización')
       }
@@ -1608,9 +1677,6 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
 
   const selectedConvo = conversations.find(c => c.id === selectedId)
 
-  const countByChannel = (channel: string) =>
-    channel === 'all' ? conversations.length : conversations.filter(c => c.channel === channel).length
-
   const unreadByChannel = (channel: string) =>
     channel === 'all'
       ? conversations.reduce((s, c) => s + c.unreadCount, 0)
@@ -1618,10 +1684,14 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
 
   const getInitials = (name: string) => name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
 
+  const fbProfile = connectedProfiles.find(p => p.toolkit === 'facebook')
+  const igProfile = connectedProfiles.find(p => p.toolkit === 'instagram')
+  const hasAnyConnection = connectedProfiles.some(p => p.connected)
+
   /* ── Loading skeleton ── */
   if (loading) {
     return (
-      <div className="flex items-center justify-center" style={{ height: 'calc(100vh - 140px)' }}>
+      <div className="flex items-center justify-center h-full">
         <div className="flex flex-col items-center gap-3">
           <Loader2 className="w-8 h-8 animate-spin text-[#0066FF]" />
           <p className="text-sm text-gray-400">Cargando bandeja…</p>
@@ -1631,46 +1701,47 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
   }
 
   return (
-    <div className="flex flex-col bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden" style={{ height: 'calc(100vh - 140px)' }}>
-      {/* ═══ Header with filter tabs ═══ */}
-      <div className="shrink-0 border-b border-gray-200 bg-white">
-        <div className="flex items-center justify-between px-4 py-2.5">
-          <div className="flex items-center gap-1">
-            {FILTER_TABS.map(tab => {
-              const label = tab === 'all' ? 'Todos' : CHANNEL_LABELS[tab] || tab
-              const ch = tab === 'all' ? 'messenger' : tab
-              const unread = unreadByChannel(tab)
-              return (
-                <button
-                  key={tab}
-                  onClick={() => setActiveFilter(tab)}
-                  className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
-                    activeFilter === tab
-                      ? `${CHANNEL_COLORS[ch]?.bg || 'bg-blue-50'} ${CHANNEL_COLORS[ch]?.text || 'text-blue-600'} shadow-sm`
-                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
-                  }`}
-                >
-                  {tab !== 'all' && CHANNEL_ICONS[tab]}
-                  {label}
-                  {unread > 0 && (
-                    <span className={`ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold leading-none ${
-                      activeFilter === tab ? 'bg-white/80 text-gray-700' : 'bg-gray-200 text-gray-600'
-                    }`}>
-                      {unread}
-                    </span>
-                  )}
-                </button>
-              )
-            })}
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* ═══ Header: Connected Profiles + Filter tabs ═══ */}
+      <div className="shrink-0 bg-white border-b border-gray-100">
+        {/* Connected profiles bar */}
+        <div className="flex items-center justify-between px-4 pt-3 pb-1">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mr-1">Conectado</span>
+            {fbProfile?.connected ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-medium border border-blue-100">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                <MessageCircle className="w-3 h-3" />
+                {fbProfile.pageName || fbProfile.accountName || 'Facebook'}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-50 text-gray-400 text-xs font-medium border border-gray-100">
+                <span className="w-1.5 h-1.5 rounded-full bg-gray-300" />
+                <MessageCircle className="w-3 h-3" />
+                Facebook
+              </span>
+            )}
+            {igProfile?.connected ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-pink-50 text-pink-700 text-xs font-medium border border-pink-100">
+                <span className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-pulse" />
+                <Hash className="w-3 h-3" />
+                {igProfile.pageName || igProfile.accountName || 'Instagram'}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-50 text-gray-400 text-xs font-medium border border-gray-100">
+                <span className="w-1.5 h-1.5 rounded-full bg-gray-300" />
+                <Hash className="w-3 h-3" />
+                Instagram
+              </span>
+            )}
           </div>
-
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
-                  className="gap-1.5 text-xs h-8"
+                  className="gap-1.5 text-xs h-7 text-gray-500 hover:text-[#0066FF]"
                   onClick={handleSync}
                   disabled={syncing}
                 >
@@ -1682,11 +1753,49 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
             </Tooltip>
           </TooltipProvider>
         </div>
+
+        {/* Filter tabs */}
+        <div className="flex items-center gap-0.5 px-4 pb-2">
+          {FILTER_TABS.map(tab => {
+            const label = tab === 'all' ? 'Todos' : CHANNEL_LABELS[tab] || tab
+            const ch = tab === 'all' ? 'messenger' : tab
+            const unread = unreadByChannel(tab)
+            return (
+              <button
+                key={tab}
+                onClick={() => setActiveFilter(tab)}
+                className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 ${
+                  activeFilter === tab
+                    ? `${CHANNEL_COLORS[ch]?.bg || 'bg-blue-50'} ${CHANNEL_COLORS[ch]?.text || 'text-blue-600'} shadow-sm`
+                    : 'text-gray-400 hover:bg-gray-50 hover:text-gray-600'
+                }`}
+              >
+                {tab !== 'all' && CHANNEL_ICONS[tab]}
+                {label}
+                {unread > 0 && (
+                  <span className={`ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold leading-none ${
+                    activeFilter === tab ? 'bg-white/80 text-gray-700' : 'bg-gray-200 text-gray-500'
+                  }`}>
+                    {unread}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
       </div>
 
+      {/* ═══ No connections warning ═══ */}
+      {!hasAnyConnection && (
+        <div className="shrink-0 px-4 py-2.5 bg-amber-50 border-b border-amber-100 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
+          <p className="text-xs text-amber-700">No hay cuentas conectadas. Ve a <button onClick={() => onNavigate?.('integraciones')} className="font-semibold underline hover:text-amber-800">Integraciones</button> para conectar Facebook o Instagram.</p>
+        </div>
+      )}
+
       {/* ═══ 3-column body ═══ */}
-      <div className="flex flex-1 min-h-0">
-        {/* ── Column 1: Conversation list (320px) ── */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* ── Column 1: Conversation list ── */}
         <div className="w-80 shrink-0 border-r border-gray-100 flex flex-col bg-gray-50/50">
           {/* Search */}
           <div className="shrink-0 p-3">
@@ -1710,8 +1819,20 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
                 </div>
                 <p className="text-sm font-medium text-gray-400">Sin conversaciones</p>
                 <p className="text-xs text-gray-300 mt-1">
-                  {searchQuery ? 'Intenta con otra búsqueda' : 'Los mensajes aparecerán aquí'}
+                  {searchQuery ? 'Intenta con otra búsqueda' : hasAnyConnection ? 'Sincroniza para cargar mensajes' : 'Conecta una cuenta para ver mensajes'}
                 </p>
+                {hasAnyConnection && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-3 gap-1.5 text-xs h-7"
+                    onClick={handleSync}
+                    disabled={syncing}
+                  >
+                    {syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                    Sincronizar ahora
+                  </Button>
+                )}
               </div>
             ) : (
               <div className="px-2 pb-2 space-y-0.5">
@@ -1741,8 +1862,7 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
                               {getInitials(conv.contact.nombre)}
                             </AvatarFallback>
                           </Avatar>
-                          <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white flex items-center justify-center ${ch.dot}`}>
-                          </div>
+                          <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white flex items-center justify-center ${ch.dot}`} />
                         </div>
 
                         {/* Content */}
@@ -1800,7 +1920,7 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
                         {CHANNEL_LABELS[selectedConvo.channel] || selectedConvo.channel}
                       </span>
                       {selectedConvo.provider === 'composio' && (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 text-[10px] font-medium">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-violet-50 text-violet-600 text-[10px] font-medium">
                           <Puzzle className="w-2.5 h-2.5" /> Composio
                         </span>
                       )}
@@ -1889,7 +2009,7 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
         </div>
 
         {/* ── Column 3: Contact sidebar (280px) ── */}
-        <div className="w-[280px] shrink-0 border-l border-gray-100 bg-gray-50/50 flex flex-col hidden lg:flex">
+        <div className="w-[280px] shrink-0 border-l border-gray-100 bg-gray-50/50 flex-col hidden lg:flex">
           {selectedConvo ? (
             <div className="flex-1 overflow-y-auto min-h-0 p-5 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-track]:transparent">
               {/* Avatar */}

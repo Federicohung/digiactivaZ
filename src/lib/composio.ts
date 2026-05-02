@@ -142,7 +142,10 @@ export async function checkIntegrationStatus(
 
     if (activeAccount) {
       const accountId = String(activeAccount.id || '');
-      const accountName = String(activeAccount.wordId || activeAccount.alias || '');
+      const metaObj = (activeAccount.meta || activeAccount.metadata || {}) as Record<string, unknown>;
+      const accountName = String(
+        activeAccount.wordId || activeAccount.alias || metaObj.name || ''
+      );
 
       // Update our DB if needed
       if (!dbConnection?.connected || dbConnection.accountId !== accountId) {
@@ -508,6 +511,22 @@ export async function pollNewMessages(
       const pagesResult = await executeComposioTool(FACEBOOK_TOOLS.LIST_PAGES, connectedAccountId, {});
       const pages = pagesResult?.data?.data || [];
 
+      // Save the first page name to the connection for display in the inbox
+      if (pages.length > 0 && pages[0].name) {
+        try {
+          await upsertComposioConnection(workspaceId, userId, 'facebook', {
+            connected: true,
+            accountId: connectedAccountId,
+            accountName: pages[0].name as string,
+            metadata: {
+              pageName: pages[0].name,
+              pageId: pages[0].id,
+              source: 'poll',
+            },
+          });
+        } catch { /* silent */ }
+      }
+
       for (const page of pages) {
         // Step 2: Get conversations for this page
         const convosResult = await executeComposioTool(FACEBOOK_TOOLS.GET_CONVERSATIONS, connectedAccountId, {
@@ -577,6 +596,23 @@ export async function pollNewMessages(
     } else if (channel === 'instagram') {
       const convosResult = await executeComposioTool(INSTAGRAM_TOOLS.LIST_CONVERSATIONS, connectedAccountId, {});
       const conversations = convosResult?.data?.data || [];
+
+      // Try to get the Instagram profile name for display in the inbox
+      try {
+        const profileResult = await executeComposioTool(INSTAGRAM_TOOLS.GET_MESSENGER_PROFILE, connectedAccountId, {});
+        const profileName = profileResult?.data?.name || profileResult?.data?.data?.name;
+        if (profileName) {
+          await upsertComposioConnection(workspaceId, userId, 'instagram', {
+            connected: true,
+            accountId: connectedAccountId,
+            accountName: profileName as string,
+            metadata: {
+              pageName: profileName,
+              source: 'poll',
+            },
+          });
+        }
+      } catch { /* silent - profile fetch may fail */ }
 
       for (const convo of conversations.slice(0, 10)) {
         const msgsResult = await executeComposioTool(INSTAGRAM_TOOLS.LIST_MESSAGES, connectedAccountId, {
