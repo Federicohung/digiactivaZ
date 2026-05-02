@@ -61,8 +61,13 @@ export async function initiateOAuth(
   toolkit: ComposioToolkit
 ): Promise<{ redirectUrl: string; connectedAccountId: string }> {
   const { session } = await createComposioSession(workspaceId, userId);
+
+  // Encode workspace/user info in state so the callback knows who this is for
+  const stateParam = encodeURIComponent(JSON.stringify({ workspaceId, userId }));
+  const callbackUrl = `${process.env.NEXT_PUBLIC_BASE_URL || 'https://digiactiva-z.vercel.app'}/api/composio/callback?state=${stateParam}`;
+
   const connectionRequest = await session.authorize(toolkit, {
-    callbackUrl: `${process.env.NEXT_PUBLIC_BASE_URL || 'https://digiactiva-z.vercel.app'}/api/composio/callback`,
+    callbackUrl,
   });
 
   const redirectUrl = connectionRequest.redirectUrl || '';

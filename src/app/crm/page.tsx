@@ -1974,78 +1974,269 @@ function WorkspacesSection({ token, user, onUserUpdate }: { token: string; user:
    ═══════════════════════════════════════════════════════════════ */
 
 function IntegracionesSection({ token }: { token: string }) {
-  const [settings, setSettings] = useState<Record<string, unknown>>({})
+  const [fbStatus, setFbStatus] = useState<'loading' | 'connected' | 'disconnected'>('loading')
+  const [igStatus, setIgStatus] = useState<'loading' | 'connected' | 'disconnected'>('loading')
+  const [connecting, setConnecting] = useState<string | null>(null)
+  const [syncing, setSyncing] = useState<string | null>(null)
+  const [syncResult, setSyncResult] = useState<{ channel: string; newMessages: number } | null>(null)
 
-  useEffect(() => {
-    apiFetch('/api/crm/settings', token)
+  // Check connection status for Facebook and Instagram
+  const checkStatus = useCallback(() => {
+    apiFetch('/api/composio/status?toolkit=facebook', token)
       .then(r => r.json())
-      .then(data => {
-        if (data.integrations) setSettings(data.integrations as Record<string, unknown>)
-      })
-      .catch(() => {})
+      .then(data => setFbStatus(data.connected ? 'connected' : 'disconnected'))
+      .catch(() => setFbStatus('disconnected'))
+
+    apiFetch('/api/composio/status?toolkit=instagram', token)
+      .then(r => r.json())
+      .then(data => setIgStatus(data.connected ? 'connected' : 'disconnected'))
+      .catch(() => setIgStatus('disconnected'))
   }, [token])
 
-  const integrations = [
+  // Check status on mount and check URL params for callback results
+  useEffect(() => {
+    checkStatus()
+
+    // Check if redirected back from OAuth callback
+    const params = new URLSearchParams(window.location.search)
+    const connected = params.get('connected')
+    const error = params.get('error')
+    if (connected) {
+      toast.success(`${connected === 'facebook' ? 'Facebook' : 'Instagram'} conectado exitosamente`)
+      // Clean URL
+      window.history.replaceState({}, '', '/crm')
+      // Re-check status after a short delay
+      setTimeout(checkStatus, 2000)
+    }
+    if (error) {
+      toast.error(`Error al conectar: ${error}`)
+      window.history.replaceState({}, '', '/crm')
+    }
+  }, [checkStatus])
+
+  const handleConnect = async (toolkit: 'facebook' | 'instagram') => {
+    setConnecting(toolkit)
+    try {
+      const res = await apiFetch('/api/composio/connect', token, {
+        method: 'POST',
+        body: JSON.stringify({ toolkit }),
+      })
+      const data = await res.json()
+
+      if (data.authUrl) {
+        // Open OAuth URL in a new tab/window
+        window.open(data.authUrl, '_blank')
+        toast.info(`Autoriza tu cuenta de ${toolkit === 'facebook' ? 'Facebook' : 'Instagram'} en la ventana que se abrió`)
+        // Start polling for connection status
+        let attempts = 0
+        const poll = setInterval(() => {
+          attempts++
+          apiFetch(`/api/composio/status?toolkit=${toolkit}`, token)
+            .then(r => r.json())
+            .then(statusData => {
+              if (statusData.connected) {
+                clearInterval(poll)
+                if (toolkit === 'facebook') setFbStatus('connected')
+                else setIgStatus('connected')
+                toast.success(`${toolkit === 'facebook' ? 'Facebook' : 'Instagram'} conectado`)
+                setConnecting(null)
+              }
+            })
+            .catch(() => {})
+          if (attempts >= 30) {
+            clearInterval(poll)
+            setConnecting(null)
+            toast.info('Tiempo de espera agotado. Verifica el estado manualmente.')
+          }
+        }, 3000)
+      } else {
+        toast.error(data.error || 'No se pudo generar la URL de conexión')
+        setConnecting(null)
+      }
+    } catch {
+      toast.error('Error al iniciar conexión')
+      setConnecting(null)
+    }
+  }
+
+  const handleSync = async (channel: 'messenger' | 'instagram') => {
+    setSyncing(channel)
+    setSyncResult(null)
+    try {
+      const res = await apiFetch('/api/composio/messages', token, {
+        method: 'POST',
+        body: JSON.stringify({ channel, action: 'sync' }),
+      })
+      const data = await res.json()
+      if (data.newMessages !== undefined) {
+        setSyncResult({ channel, newMessages: data.newMessages })
+        toast.success(`${data.newMessages} mensajes nuevos sincronizados de ${channel === 'messenger' ? 'Facebook' : 'Instagram'}`)
+      } else {
+        toast.info(data.message || 'Sincronización completada')
+      }
+    } catch {
+      toast.error('Error al sincronizar mensajes')
+    } finally {
+      setSyncing(null)
+    }
+  }
+
+  const composioIntegrations = [
+    {
+      id: 'facebook',
+      name: 'Facebook Messenger',
+      description: 'Conecta tu Página de Facebook para recibir y enviar mensajes de Messenger directamente desde el CRM.',
+      icon: <MessageCircle className="w-6 h-6" />,
+      color: 'bg-blue-50 text-blue-600',
+      status: fbStatus,
+      toolkit: 'facebook' as const,
+      channel: 'messenger' as const,
+    },
+    {
+      id: 'instagram',
+      name: 'Instagram DM',
+      description: 'Conecta tu cuenta de Instagram para gestionar mensajes directos desde el CRM.',
+      icon: <Hash className="w-6 h-6" />,
+      color: 'bg-pink-50 text-pink-600',
+      status: igStatus,
+      toolkit: 'instagram' as const,
+      channel: 'instagram' as const,
+    },
+  ]
+
+  const otherIntegrations = [
     {
       id: 'whatsapp',
       name: 'WhatsApp Business',
       description: 'Conecta tu WhatsApp Business API para gestionar conversaciones desde el CRM.',
       icon: <MessageSquare className="w-6 h-6" />,
       color: 'bg-green-50 text-green-600',
-      fields: ['Phone Number ID', 'Business Account ID', 'Access Token'],
+      comingSoon: true,
     },
     {
       id: 'resend',
       name: 'Email (Resend)',
       description: 'Envía emails transaccionales y campañas desde tu CRM.',
       icon: <Mail className="w-6 h-6" />,
-      color: 'bg-blue-50 text-blue-600',
-      fields: ['API Key', 'From Email', 'From Name'],
+      color: 'bg-sky-50 text-sky-600',
+      comingSoon: true,
     },
     {
-      id: 'composio',
-      name: 'Composio',
-      description: 'Conecta herramientas externas como Google Calendar, HubSpot, y más.',
-      icon: <Puzzle className="w-6 h-6" />,
-      color: 'bg-purple-50 text-purple-600',
-      fields: ['API Key', 'Entity ID'],
+      id: 'elevenlabs',
+      name: 'Sofía Voice (ElevenLabs)',
+      description: 'Agente de voz IA para atención telefónica automatizada.',
+      icon: <Mic className="w-6 h-6" />,
+      color: 'bg-violet-50 text-violet-600',
+      comingSoon: true,
     },
   ]
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-gray-900">Integraciones</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-gray-900">Integraciones</h2>
+        <Button variant="outline" size="sm" className="gap-2" onClick={checkStatus}>
+          <RefreshCw className="w-3.5 h-3.5" /> Verificar estado
+        </Button>
+      </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {integrations.map(int => (
-          <Card key={int.id}>
-            <CardContent className="p-5">
-              <div className="flex items-center gap-3 mb-4">
-                <div className={`w-10 h-10 rounded-xl ${int.color} flex items-center justify-center`}>
-                  {int.icon}
-                </div>
-                <div>
-                  <h3 className="font-semibold text-gray-900">{int.name}</h3>
-                  <Badge variant="outline" className="text-xs">
-                    {settings[int.id] ? 'Conectado' : 'Desconectado'}
-                  </Badge>
-                </div>
-              </div>
-              <p className="text-sm text-gray-500 mb-4">{int.description}</p>
-              <div className="space-y-3">
-                {int.fields.map(field => (
-                  <div key={field}>
-                    <Label className="text-xs">{field}</Label>
-                    <Input placeholder={`Ingresa ${field.toLowerCase()}`} className="mt-1" />
+      {/* Composio-powered integrations (Facebook & Instagram) */}
+      <div>
+        <h3 className="text-sm font-medium text-gray-500 mb-3">Mensajería vía Composio</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {composioIntegrations.map(int => (
+            <Card key={int.id}>
+              <CardContent className="p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-xl ${int.color} flex items-center justify-center`}>
+                      {int.icon}
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-gray-900">{int.name}</h3>
+                      {int.status === 'loading' ? (
+                        <Badge variant="outline" className="text-xs"><Loader2 className="w-3 h-3 animate-spin mr-1" />Verificando...</Badge>
+                      ) : int.status === 'connected' ? (
+                        <Badge className="text-xs bg-green-100 text-green-700 border-green-200"><Check className="w-3 h-3 mr-1" />Conectado</Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-xs text-gray-500">Desconectado</Badge>
+                      )}
+                    </div>
                   </div>
-                ))}
-                <Button size="sm" className="w-full bg-[#0066FF] hover:bg-[#0052CC]">
-                  Conectar
+                </div>
+                <p className="text-sm text-gray-500 mb-4">{int.description}</p>
+                <div className="space-y-2">
+                  {int.status === 'connected' ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full gap-2"
+                        onClick={() => handleSync(int.channel)}
+                        disabled={!!syncing}
+                      >
+                        {syncing === int.channel ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                        Sincronizar mensajes
+                      </Button>
+                      {syncResult && syncResult.channel === int.channel && (
+                        <p className="text-xs text-center text-gray-500">
+                          {syncResult.newMessages > 0
+                            ? `${syncResult.newMessages} mensajes nuevos sincronizados`
+                            : 'No hay mensajes nuevos'}
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <Button
+                      size="sm"
+                      className="w-full bg-[#0066FF] hover:bg-[#0052CC] gap-2"
+                      onClick={() => handleConnect(int.toolkit)}
+                      disabled={!!connecting}
+                    >
+                      {connecting === int.toolkit ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Conectando... Autoriza en la ventana emergente
+                        </>
+                      ) : (
+                        <>
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          Conectar {int.name}
+                        </>
+                      )}
+                    </Button>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+
+      {/* Coming soon integrations */}
+      <div>
+        <h3 className="text-sm font-medium text-gray-500 mb-3">Próximamente</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {otherIntegrations.map(int => (
+            <Card key={int.id} className="opacity-70">
+              <CardContent className="p-5">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className={`w-10 h-10 rounded-xl ${int.color} flex items-center justify-center`}>
+                    {int.icon}
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900">{int.name}</h3>
+                    <Badge variant="outline" className="text-xs text-amber-600 border-amber-200">Próximamente</Badge>
+                  </div>
+                </div>
+                <p className="text-sm text-gray-500 mb-4">{int.description}</p>
+                <Button size="sm" variant="outline" className="w-full" disabled>
+                  No disponible aún
                 </Button>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
       </div>
     </div>
   )
