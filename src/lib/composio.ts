@@ -94,18 +94,36 @@ export async function checkIntegrationStatus(
   }
 }
 
-// ─── Triggers ───
+// ─── Composio Tool Slugs (discovered via COMPOSIO_SEARCH_TOOLS) ───
 
-// Map of Composio trigger slugs for each toolkit
+// Facebook Messenger tools
+const FACEBOOK_TOOLS = {
+  LIST_PAGES: 'FACEBOOK_LIST_MANAGED_PAGES',
+  GET_CONVERSATIONS: 'FACEBOOK_GET_PAGE_CONVERSATIONS',
+  GET_MESSAGES: 'FACEBOOK_GET_CONVERSATION_MESSAGES',
+  GET_MESSAGE_DETAILS: 'FACEBOOK_GET_MESSAGE_DETAILS',
+  SEND_MESSAGE: 'FACEBOOK_SEND_MESSAGE',
+  SEND_MEDIA: 'FACEBOOK_SEND_MEDIA_MESSAGE',
+  MARK_SEEN: 'FACEBOOK_MARK_MESSAGE_SEEN',
+} as const;
+
+// Instagram DM tools
+const INSTAGRAM_TOOLS = {
+  LIST_CONVERSATIONS: 'INSTAGRAM_LIST_ALL_CONVERSATIONS',
+  GET_CONVERSATION: 'INSTAGRAM_GET_CONVERSATION',
+  LIST_MESSAGES: 'INSTAGRAM_LIST_ALL_MESSAGES',
+  SEND_TEXT: 'INSTAGRAM_SEND_TEXT_MESSAGE',
+  GET_PAGE_CONVERSATIONS: 'INSTAGRAM_GET_PAGE_CONVERSATIONS',
+  GET_MESSENGER_PROFILE: 'INSTAGRAM_GET_MESSENGER_PROFILE',
+} as const;
+
+// ─── Triggers ───
+// NOTE: As of May 2026, Facebook and Instagram do NOT have native
+// Composio triggers. We use polling via the tools above instead.
+// If Composio adds trigger support later, we can activate them here.
 const TRIGGER_SLUGS: Record<ComposioToolkit, string[]> = {
-  facebook: [
-    'FACEBOOK_MESSENGER_MESSAGE_RECEIVED',
-    'FACEBOOK_MESSENGER_MESSAGE_DELIVERED',
-  ],
-  instagram: [
-    'INSTAGRAM_DIRECT_MESSAGE_RECEIVED',
-    'INSTAGRAM_MESSAGE_RECEIVED',
-  ],
+  facebook: [], // No native triggers yet
+  instagram: [], // No native triggers yet
 };
 
 /**
@@ -328,8 +346,8 @@ export async function fetchComposioMessages(
 
   const listMessagesTool =
     channel === 'messenger'
-      ? 'FACEBOOK_MESSENGER_GET_CONVERSATIONS'
-      : 'INSTAGRAM_GET_DIRECT_MESSAGES';
+      ? FACEBOOK_TOOLS.GET_CONVERSATIONS
+      : INSTAGRAM_TOOLS.LIST_CONVERSATIONS;
 
   try {
     const result = await session.execute(listMessagesTool, {
@@ -360,8 +378,8 @@ export async function sendComposioMessage(
 
   const sendTool =
     channel === 'messenger'
-      ? 'FACEBOOK_MESSENGER_SEND_MESSAGE'
-      : 'INSTAGRAM_SEND_DIRECT_MESSAGE';
+      ? FACEBOOK_TOOLS.SEND_MESSAGE
+      : INSTAGRAM_TOOLS.SEND_TEXT;
 
   try {
     const result = await session.execute(sendTool, {
@@ -373,6 +391,189 @@ export async function sendComposioMessage(
     console.error('[COMPOSIO_SEND_MESSAGE_ERROR]', error);
     throw error;
   }
+}
+
+// ─── Polling for New Messages ───
+// Since Facebook/Instagram don't have native Composio triggers,
+// we poll for new messages using the Composio tools.
+
+/**
+ * Poll for new Facebook Messenger or Instagram messages.
+ * Fetches recent conversations and messages, then syncs any new ones
+ * into our database as Contact + Conversation + Message records.
+ *
+ * Returns the count of new messages synced.
+ */
+export async function pollNewMessages(
+  workspaceId: string,
+  userId: string,
+  channel: 'messenger' | 'instagram'
+): Promise<{ newMessages: number; newContacts: number }> {
+  const { session } = await createComposioSession(workspaceId, userId);
+
+  let newMessages = 0;
+  let newContacts = 0;
+
+  try {
+    if (channel === 'messenger') {
+      // Step 1: List managed pages
+      const pagesResult = await session.execute(FACEBOOK_TOOLS.LIST_PAGES, {});
+      const pages = pagesResult?.data?.data || [];
+
+      for (const page of pages) {
+        // Step 2: Get conversations for this page
+        const convosResult = await session.execute(FACEBOOK_TOOLS.GET_CONVERSATIONS, {
+          page_id: page.id,
+        });
+        const conversations = convosResult?.data?.data || [];
+
+        for (const convo of conversations.slice(0, 10)) {
+          // Step 3: Get messages for this conversation
+          const msgsResult = await session.execute(FACEBOOK_TOOLS.GET_MESSAGES, {
+            conversation_id: convo.id,
+          });
+          const messages = msgsResult?.data?.data || [];
+
+          for (const msg of messages.slice(-5)) {
+            const senderId = msg.from?.id || '';
+            const senderName = msg.from?.name || 'Desconocido';
+            const content = msg.message || '';
+
+            if (!senderId || !content) continue;
+
+            // Check for duplicate
+            const existing = await db.message.findFirst({
+              where: {
+                workspaceId,
+                metadata: {
+                  path: ['composioMessageId'],
+                  equals: msg.id,
+                },
+              },
+            });
+
+            if (existing) continue;
+
+            // Create/update contact
+            const contact = await findOrCreateContact(workspaceId, 'messenger', senderId, senderName);
+            // Create/update conversation
+            const conversation = await findOrCreateConversation(workspaceId, contact.id, 'messenger');
+
+            // Save message
+            await db.message.create({
+              data: {
+                workspaceId,
+                contactId: contact.id,
+                channel: 'messenger',
+                direction: msg.from?.id === page.id ? 'outbound' : 'inbound',
+                content,
+                conversationId: conversation.id,
+                metadata: {
+                  composioMessageId: msg.id,
+                  senderId,
+                  senderName,
+                  source: 'composio_poll',
+                  pageId: page.id,
+                },
+                status: 'delivered',
+              },
+            });
+
+            // Update conversation
+            await db.conversation.update({
+              where: { id: conversation.id },
+              data: {
+                lastMessagePreview: content.substring(0, 100),
+                lastMessageAt: new Date(msg.created_time || Date.now()),
+                ...(msg.from?.id !== page.id ? { unreadCount: { increment: 1 } } : {}),
+              },
+            });
+
+            newMessages++;
+          }
+        }
+      }
+    } else if (channel === 'instagram') {
+      // Step 1: List Instagram conversations
+      const convosResult = await session.execute(INSTAGRAM_TOOLS.LIST_CONVERSATIONS, {});
+      const conversations = convosResult?.data?.data || [];
+
+      for (const convo of conversations.slice(0, 10)) {
+        // Step 2: Get messages for this conversation
+        const msgsResult = await session.execute(INSTAGRAM_TOOLS.LIST_MESSAGES, {
+          conversation_id: convo.id,
+        });
+        const messages = msgsResult?.data?.data || [];
+
+        for (const msg of messages.slice(-5)) {
+          const senderId = msg.from?.id || '';
+          const senderName = msg.from?.name || 'Desconocido';
+          const content = msg.message || '';
+
+          if (!senderId || !content) continue;
+
+          // Check for duplicate
+          const existing = await db.message.findFirst({
+            where: {
+              workspaceId,
+              metadata: {
+                path: ['composioMessageId'],
+                equals: msg.id,
+              },
+            },
+          });
+
+          if (existing) continue;
+
+          // Create/update contact
+          const contact = await findOrCreateContact(workspaceId, 'instagram', senderId, senderName);
+          // Create/update conversation
+          const conversation = await findOrCreateConversation(workspaceId, contact.id, 'instagram');
+
+          // Save message
+          await db.message.create({
+            data: {
+              workspaceId,
+              contactId: contact.id,
+              channel: 'instagram',
+              direction: 'inbound',
+              content,
+              conversationId: conversation.id,
+              metadata: {
+                composioMessageId: msg.id,
+                senderId,
+                senderName,
+                source: 'composio_poll',
+                conversationId: convo.id,
+              },
+              status: 'delivered',
+            },
+          });
+
+          // Update conversation
+          await db.conversation.update({
+            where: { id: conversation.id },
+            data: {
+              lastMessagePreview: content.substring(0, 100),
+              lastMessageAt: new Date(msg.created_time || Date.now()),
+              unreadCount: { increment: 1 },
+            },
+          });
+
+          newMessages++;
+        }
+      }
+    }
+
+    if (newMessages > 0) {
+      console.log(`[COMPOSIO_POLL] Synced ${newMessages} new ${channel} messages for workspace ${workspaceId}`);
+    }
+  } catch (error) {
+    console.error(`[COMPOSIO_POLL_ERROR] channel=${channel}:`, error);
+    throw error;
+  }
+
+  return { newMessages, newContacts };
 }
 
 // ─── Database Helpers ───
