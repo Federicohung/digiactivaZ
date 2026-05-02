@@ -200,6 +200,23 @@ model Lead {
   @@index([workspaceId])
 }
 
+// ─── Composio Connections (Facebook & Instagram) ───
+model ComposioConnection {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String
+  toolkit     String   // facebook | instagram
+  connected   Boolean  @default(false)
+  accountId   String?  // FB/IG account ID
+  accountName String?  // FB/IG page/account name
+  metadata    Json     @default("{}") // Store any extra data from Composio
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([workspaceId, toolkit])
+  @@index([workspaceId])
+}
+
 // ─── Global Settings ───
 model GlobalSetting {
   id    String @id @default(cuid())

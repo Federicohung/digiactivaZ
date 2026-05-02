@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken, extractBearerToken } from '@/lib/auth';
+import { sendComposioMessage } from '@/lib/composio';
 
 async function getAuth(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
@@ -11,6 +12,7 @@ async function getAuth(request: NextRequest) {
 }
 
 // POST /api/inbox/conversations/[id]/send — Send outbound message (JWT auth)
+// Supports both native and Composio routing
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -35,6 +37,7 @@ export async function POST(
     // Verify conversation belongs to workspace
     const conversation = await db.conversation.findFirst({
       where: { id, workspaceId: auth.activeWorkspaceId },
+      include: { contact: true },
     });
 
     if (!conversation) {
@@ -46,6 +49,60 @@ export async function POST(
 
     const messageChannel = channel || conversation.channel;
 
+    // ─── Composio Routing ───
+    // If the conversation uses Composio as provider and the channel is messenger or instagram,
+    // route through Composio to actually send the message externally
+    if (
+      conversation.provider === 'composio' &&
+      (messageChannel === 'messenger' || messageChannel === 'instagram')
+    ) {
+      const recipientId =
+        messageChannel === 'messenger'
+          ? conversation.contact.messengerId
+          : conversation.contact.instagramId;
+
+      if (recipientId) {
+        try {
+          // Send via Composio to the external platform
+          await sendComposioMessage(
+            auth.activeWorkspaceId,
+            auth.userId,
+            messageChannel as 'messenger' | 'instagram',
+            recipientId,
+            content.trim()
+          );
+        } catch (composioError) {
+          console.error('[INBOX_SEND_COMPOSIO_ERROR]', composioError);
+          // Still create the message in our DB but mark as failed
+          const failedMessage = await db.message.create({
+            data: {
+              workspaceId: auth.activeWorkspaceId,
+              contactId: conversation.contactId,
+              channel: messageChannel,
+              direction: 'outbound',
+              content: content.trim(),
+              conversationId: id,
+              metadata: {
+                sentBy: auth.userId,
+                conversationId: id,
+                composioError: String(composioError),
+              },
+              status: 'failed',
+            },
+          });
+
+          return NextResponse.json(
+            {
+              error: 'Error al enviar mensaje via Composio',
+              message: failedMessage,
+            },
+            { status: 502 }
+          );
+        }
+      }
+    }
+
+    // ─── Native Flow ───
     // Create Message record (direction: outbound)
     const message = await db.message.create({
       data: {
@@ -58,6 +115,9 @@ export async function POST(
         metadata: {
           sentBy: auth.userId,
           conversationId: id,
+          ...(conversation.provider === 'composio'
+            ? { routedVia: 'composio' }
+            : {}),
         },
         status: 'delivered',
       },
