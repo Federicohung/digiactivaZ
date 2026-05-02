@@ -52,3 +52,11 @@ prompt
 server.log
 # Skills directory
 /skills/
+# Upload directory (original project backup)
+/upload/
+# Database
+/db/
+# Worklog
+/worklog.md
+# Scripts
+/.zscripts/
