@@ -53,7 +53,8 @@ export async function POST(request: NextRequest) {
         results.push({ channel: ch, synced: result.newMessages });
       } catch (err) {
         console.error(`[INBOX_SYNC_ERROR] channel=${ch}:`, err);
-        results.push({ channel: ch, synced: 0, error: 'Error al sincronizar' });
+        const errMsg = err instanceof Error ? err.message : String(err);
+        results.push({ channel: ch, synced: 0, error: errMsg || 'Error al sincronizar' });
       }
     }
 
