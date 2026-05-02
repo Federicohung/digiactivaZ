@@ -29,7 +29,7 @@ import { toast } from 'sonner'
 import {
   DndContext, DragEndEvent, DragOverlay, DragStartEvent,
   PointerSensor, useSensor, useSensors,
-  useDraggable, useDroppable, DragOverlayProps
+  useDraggable, useDroppable, DragOverlayProps, closestCenter
 } from '@dnd-kit/core'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell } from 'recharts'
 
@@ -771,7 +771,17 @@ function PipelineSection({ token }: { token: string }) {
     if (!over) return
 
     const contactId = String(active.id)
-    const targetEtapa = String(over.id)
+    let targetEtapa = String(over.id)
+
+    // If dropped on another card (not a column), find which column that card is in
+    if (!ETAPAS.includes(targetEtapa as typeof ETAPAS[number])) {
+      for (const etapa of ETAPAS) {
+        if (pipeline[etapa]?.find(c => c.id === targetEtapa)) {
+          targetEtapa = etapa
+          break
+        }
+      }
+    }
 
     // Find the contact
     let contact: Contact | null = null
@@ -846,31 +856,7 @@ function PipelineSection({ token }: { token: string }) {
 
       <DndContext
         sensors={sensors}
-        collisionDetection={({ droppableContainers, active }) => {
-          // Custom collision detection: find the droppable column that contains the active draggable
-          // by checking which column's bounding rect contains the pointer position
-          const activeRect = active.rect.current.translated
-          if (!activeRect) return []
-
-          // Find all column droppables and return the one whose rect contains the drag position
-          const collisions: { id: string | number; ratio: number }[] = []
-          for (const container of droppableContainers) {
-            const rect = container.rect.current
-            if (!rect) continue
-            const id = String(container.id)
-            // Only consider etapa columns as drop targets
-            if (!ETAPAS.includes(id as typeof ETAPAS[number])) continue
-
-            // Check if the center of the dragged item is within this column
-            const centerX = activeRect.left + activeRect.width / 2
-            const centerY = activeRect.top + activeRect.height / 2
-
-            if (centerX >= rect.left && centerX <= rect.right && centerY >= rect.top && centerY <= rect.bottom) {
-              collisions.push({ id: container.id, ratio: 1 })
-            }
-          }
-          return collisions
-        }}
+        collisionDetection={closestCenter}
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
@@ -1599,6 +1585,7 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
   const [activeFilter, setActiveFilter] = useState<FilterTab>('all')
   const [syncing, setSyncing] = useState(false)
   const [msgLoading, setMsgLoading] = useState(false)
+  const [agentPaused, setAgentPaused] = useState<Record<string, boolean>>({})
   const [connectedProfiles, setConnectedProfiles] = useState<Array<{ toolkit: string; connected: boolean; accountName: string | null; pageName: string | null }>>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const chatScrollRef = useRef<HTMLDivElement>(null)
@@ -1710,6 +1697,44 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
     }
   }, [messages])
+
+  /* ── Auto-poll for new messages every 15s ── */
+  const syncingRef = useRef(false)
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (syncingRef.current) return
+      syncingRef.current = true
+      try {
+        const syncRes = await apiFetch('/api/inbox/sync', tokenRef.current, { method: 'POST', body: JSON.stringify({}) })
+        const syncData = await syncRes.json()
+        if (syncData.ok && syncData.totalSynced > 0) {
+          // Refresh conversation list
+          const currentFilter = activeFilterRef.current
+          const params = new URLSearchParams()
+          if (currentFilter !== 'all') params.set('channel', currentFilter)
+          const qs = params.toString() ? `?${params.toString()}` : ''
+          const res = await apiFetch(`/api/inbox/conversations${qs}`, tokenRef.current)
+          const data = await res.json()
+          if (isMounted.current && data.conversations) setConversations(data.conversations)
+          
+          // If a conversation is selected, refresh its messages too
+          if (selectedId) {
+            const msgRes = await apiFetch(`/api/inbox/conversations/${selectedId}/messages`, tokenRef.current)
+            const msgData = await msgRes.json()
+            if (isMounted.current && msgData.messages) setMessages(msgData.messages)
+          }
+          
+          // Refresh connected profiles
+          const connRes = await apiFetch('/api/composio/connections', tokenRef.current)
+          const connData = await connRes.json()
+          if (isMounted.current && connData.connections) setConnectedProfiles(connData.connections)
+        }
+      } catch { /* silent */ }
+      syncingRef.current = false
+    }, 15000) // 15 seconds
+    
+    return () => clearInterval(interval)
+  }, []) // Only run once on mount
 
   /* ── Send message ── */
   const sendMessage = async () => {
@@ -2002,9 +2027,34 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
                     </div>
                   </div>
                 </div>
-                {selectedConvo.status === 'closed' && (
-                  <Badge variant="secondary" className="text-[10px] h-4">Cerrada</Badge>
-                )}
+                <div className="flex items-center gap-2">
+                  {/* Agent control */}
+                  {(selectedConvo.channel === 'messenger' || selectedConvo.channel === 'instagram') && (
+                    <button
+                      onClick={() => {
+                        const isPaused = agentPaused[selectedConvo.id] ?? false
+                        const newPaused = !isPaused
+                        setAgentPaused(prev => ({ ...prev, [selectedConvo.id]: newPaused }))
+                        apiFetch(`/api/inbox/conversations/${selectedConvo.id}/agent`, token, {
+                          method: 'POST',
+                          body: JSON.stringify({ enabled: !newPaused }),
+                        }).catch(() => {})
+                        toast.success(newPaused ? 'Agente pausado para esta conversación' : 'Agente reactivado para esta conversación')
+                      }}
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-medium border transition-colors ${
+                        agentPaused[selectedConvo.id]
+                          ? 'bg-emerald-50 text-emerald-600 border-emerald-200 hover:bg-emerald-100'
+                          : 'bg-amber-50 text-amber-600 border-amber-200 hover:bg-amber-100'
+                      }`}
+                    >
+                      <Bot className="w-2.5 h-2.5" />
+                      {agentPaused[selectedConvo.id] ? 'Reactivar agente' : 'Pausar agente'}
+                    </button>
+                  )}
+                  {selectedConvo.status === 'closed' && (
+                    <Badge variant="secondary" className="text-[10px] h-4">Cerrada</Badge>
+                  )}
+                </div>
               </div>
 
               {/* Messages */}
@@ -2198,18 +2248,21 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
    ═══════════════════════════════════════════════════════════════ */
 
 function AgenteSection({ token }: { token: string }) {
-  const [config, setConfig] = useState<Record<string, Record<string, string>>>({})
+  const [agentPrompt, setAgentPrompt] = useState('')
+  const [agentEnabled, setAgentEnabled] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [activeChannel, setActiveChannel] = useState('web_chat')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     apiFetch('/api/crm/agent-config', token)
       .then(r => r.json())
       .then(data => {
-        if (data.agentPrompts) {
-          setConfig(data.agentPrompts)
-        }
+        // Get the unified prompt (stored under 'global' key or first available)
+        const prompts = data.agentPrompts || {}
+        const globalPrompt = prompts.global?.estructurado || prompts.global?.prompt || ''
+        const isEnabled = prompts.global?.enabled !== false && !!globalPrompt
+        setAgentPrompt(globalPrompt)
+        setAgentEnabled(prompts.global?.enabled ?? false)
       })
       .catch(() => toast.error('Error al cargar config'))
       .finally(() => setLoading(false))
@@ -2220,9 +2273,9 @@ function AgenteSection({ token }: { token: string }) {
     try {
       await apiFetch('/api/crm/agent-config', token, {
         method: 'PUT',
-        body: JSON.stringify({ channel: activeChannel, prompts: config[activeChannel] }),
+        body: JSON.stringify({ channel: 'global', prompts: { prompt: agentPrompt, enabled: agentEnabled } }),
       })
-      toast.success('Configuración guardada')
+      toast.success('Configuración del agente guardada')
     } catch {
       toast.error('Error al guardar')
     } finally {
@@ -2230,94 +2283,88 @@ function AgenteSection({ token }: { token: string }) {
     }
   }
 
-  const handleReset = async () => {
-    try {
-      const res = await apiFetch('/api/crm/agent-config', token, {
-        method: 'POST',
-        body: JSON.stringify({ action: 'reset', channel: activeChannel }),
-      })
-      const data = await res.json()
-      if (data.agentPrompts) {
-        setConfig(data.agentPrompts)
-      }
-      toast.success('Prompts restaurados')
-    } catch {
-      toast.error('Error al restaurar')
-    }
-  }
-
-  const updatePrompt = (key: string, value: string) => {
-    setConfig(prev => ({
-      ...prev,
-      [activeChannel]: { ...prev[activeChannel], [key]: value },
-    }))
-  }
-
   if (loading) return <div className="flex justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-[#0066FF]" /></div>
-
-  const channelPrompts = config[activeChannel] || {}
-
-  const promptFields = [
-    { key: 'greeting', label: 'Saludo', icon: <MessageCircle className="w-3.5 h-3.5" /> },
-    { key: 'qualification', label: 'Calificación', icon: <Target className="w-3.5 h-3.5" /> },
-    { key: 'scheduling', label: 'Agendamiento', icon: <Calendar className="w-3.5 h-3.5" /> },
-    { key: 'fallback', label: 'Fallback', icon: <AlertCircle className="w-3.5 h-3.5" /> },
-    { key: 'closing', label: 'Cierre', icon: <Check className="w-3.5 h-3.5" /> },
-  ]
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-800">Configuración del Agente IA</h2>
-        <div className="flex gap-1.5">
-          <Button variant="outline" size="sm" className="h-7 text-[10px] gap-1" onClick={handleReset}><RefreshCw className="w-3 h-3" /> Restaurar</Button>
+        <div>
+          <h2 className="text-sm font-semibold text-gray-800">Agente IA</h2>
+          <p className="text-[10px] text-gray-400 mt-0.5">Un solo prompt para todos los canales conectados</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setAgentEnabled(!agentEnabled)}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${agentEnabled ? 'bg-[#0066FF]' : 'bg-gray-200'}`}
+            >
+              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${agentEnabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+            </button>
+            <span className="text-[10px] font-medium text-gray-500">{agentEnabled ? 'Activo' : 'Pausado'}</span>
+          </div>
           <Button size="sm" className="bg-[#0066FF] hover:bg-[#0052CC] h-7 text-[10px] gap-1" onClick={handleSave} disabled={saving}>
             {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />} Guardar
           </Button>
         </div>
       </div>
 
-      <Tabs value={activeChannel} onValueChange={setActiveChannel}>
-        <TabsList className="h-8">
-          <TabsTrigger value="web_chat" className="gap-1 text-xs"><Globe className="w-3 h-3" /> Web Chat</TabsTrigger>
-          <TabsTrigger value="whatsapp" className="gap-1 text-xs"><MessageSquare className="w-3 h-3" /> WhatsApp</TabsTrigger>
-          <TabsTrigger value="voice" className="gap-1 text-xs"><Mic className="w-3 h-3" /> Voz</TabsTrigger>
-        </TabsList>
+      {/* Agent Status Card */}
+      <Card className={`shadow-none border ${agentEnabled ? 'border-emerald-100 bg-emerald-50/30' : 'border-gray-100 bg-gray-50/30'}`}>
+        <CardContent className="p-3">
+          <div className="flex items-center gap-2">
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${agentEnabled ? 'bg-emerald-100 text-emerald-600' : 'bg-gray-100 text-gray-400'}`}>
+              <Bot className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-gray-800">
+                {agentEnabled ? 'Agente activo en todos los canales' : 'Agente pausado'}
+              </p>
+              <p className="text-[10px] text-gray-400">
+                {agentEnabled
+                  ? 'Responde automáticamente en Messenger, Instagram, Web Chat y WhatsApp'
+                  : 'El agente no responderá mensajes automáticamente'}
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-        {['web_chat', 'whatsapp', 'voice'].map(channel => (
-          <TabsContent key={channel} value={channel} className="space-y-3 mt-3">
-            {promptFields.map(field => (
-              <Card key={field.key} className="shadow-none border-gray-100">
-                <CardContent className="p-3">
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <span className="text-gray-400">{field.icon}</span>
-                    <Label className="text-xs font-medium">{field.label}</Label>
-                  </div>
-                  <Textarea
-                    value={channelPrompts[field.key] || ''}
-                    onChange={e => updatePrompt(field.key, e.target.value)}
-                    rows={2}
-                    className="resize-none text-xs"
-                  />
-                </CardContent>
-              </Card>
-            ))}
+      {/* Prompt */}
+      <Card className="shadow-none border-gray-100">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <Label className="text-xs font-semibold">Prompt del Agente</Label>
+              <p className="text-[10px] text-gray-400 mt-0.5">Instrucciones que definen la personalidad y comportamiento del agente</p>
+            </div>
+          </div>
+          <Textarea
+            value={agentPrompt}
+            onChange={e => setAgentPrompt(e.target.value)}
+            rows={10}
+            placeholder="Eres Sofía, la asistente virtual de [mi negocio]. Tu objetivo es atender consultas de clientes potenciales de forma amable y profesional. Debes: 1) Saludar cordialmente, 2) Preguntar sobre su negocio y qué solución busca, 3) Calificar al lead, 4) Ofrecer agendar una llamada. Mantén un tono cercano pero profesional. Responde en español."
+            className="resize-none text-xs font-mono"
+          />
+          <div className="flex items-center justify-between mt-2">
+            <p className="text-[9px] text-gray-300">{agentPrompt.length} caracteres</p>
+            <p className="text-[9px] text-gray-300">El mismo prompt aplica a todos los canales</p>
+          </div>
+        </CardContent>
+      </Card>
 
-            <Card className="shadow-none border-gray-100">
-              <CardContent className="p-3">
-                <Label className="text-xs font-medium mb-1.5 block">Prompt estructurado (avanzado)</Label>
-                <Textarea
-                  value={channelPrompts.estructurado || ''}
-                  onChange={e => updatePrompt('estructurado', e.target.value)}
-                  rows={4}
-                  placeholder="Prompt personalizado completo..."
-                  className="font-mono text-[10px]"
-                />
-              </CardContent>
-            </Card>
-          </TabsContent>
-        ))}
-      </Tabs>
+      {/* Tips */}
+      <Card className="shadow-none border-gray-100">
+        <CardContent className="p-3">
+          <p className="text-[10px] font-medium text-gray-500 mb-2">Tips para un buen prompt</p>
+          <div className="space-y-1">
+            <p className="text-[10px] text-gray-400">• Define el nombre y rol del agente (ej: "Eres Sofía, asistente de...")</p>
+            <p className="text-[10px] text-gray-400">• Especifica el objetivo principal (calificar leads, agendar llamadas, etc.)</p>
+            <p className="text-[10px] text-gray-400">• Incluye el tono y estilo de comunicación</p>
+            <p className="text-[10px] text-gray-400">• Agrega reglas claras (qué preguntar, qué NO hacer)</p>
+            <p className="text-[10px] text-gray-400">• Menciona el idioma de respuesta</p>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }

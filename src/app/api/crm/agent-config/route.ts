@@ -10,10 +10,14 @@ async function getAuth(request: NextRequest) {
   return payload;
 }
 
-const VALID_CHANNELS = ['web_chat', 'whatsapp', 'voice'] as const;
+const VALID_CHANNELS = ['global', 'web_chat', 'whatsapp', 'voice'] as const;
 type AgentChannel = (typeof VALID_CHANNELS)[number];
 
 const DEFAULT_PROMPTS: Record<AgentChannel, Record<string, string>> = {
+  global: {
+    prompt: '',
+    enabled: 'false',
+  },
   web_chat: {
     greeting: '¡Hola! 👋 Soy el asistente virtual. ¿En qué puedo ayudarte hoy?',
     qualification: 'Para poder ayudarte mejor, ¿podrías contarme un poco sobre tu negocio y qué estás buscando?',
@@ -71,6 +75,11 @@ export async function GET(request: NextRequest) {
           }
         }
       }
+    }
+
+    // Ensure 'global' channel exists with enabled field
+    if (!agentPrompts.global) {
+      agentPrompts.global = { prompt: '', enabled: 'false' };
     }
 
     return NextResponse.json({
@@ -136,6 +145,22 @@ export async function PUT(request: NextRequest) {
     for (const [key, value] of Object.entries(prompts)) {
       if (typeof value === 'string') {
         agentPrompts[channel][key] = value;
+      } else if (key === 'enabled' && typeof value === 'boolean') {
+        // Store enabled as string for JSON compatibility with existing schema
+        agentPrompts[channel][key] = String(value);
+      }
+    }
+
+    // If saving global channel, also propagate to all other channels
+    if (channel === 'global') {
+      const globalPrompt = agentPrompts.global?.prompt || agentPrompts.global?.estructurado || '';
+      const globalEnabled = agentPrompts.global?.enabled === 'true';
+      for (const ch of VALID_CHANNELS) {
+        if (ch !== 'global') {
+          if (!agentPrompts[ch]) agentPrompts[ch] = {};
+          agentPrompts[ch].estructurado = globalPrompt;
+          agentPrompts[ch].enabled = String(globalEnabled);
+        }
       }
     }
 

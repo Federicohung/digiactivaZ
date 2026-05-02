@@ -14,9 +14,9 @@ import { VercelProvider } from '@composio/vercel';
 import { db } from '@/lib/db';
 
 // ─── Singleton Composio Instance ───
-let composioInstance: Composio | null = null;
+let composioInstance: any = null;
 
-export function getComposio(): Composio {
+export function getComposio(): any {
   if (!composioInstance) {
     composioInstance = new Composio({
       provider: new VercelProvider(),
@@ -198,19 +198,57 @@ export async function checkIntegrationStatus(
       console.log(`[COMPOSIO_STATUS_CHECK] Active account found: id=${accountId}, name=${accountName || '(empty)'}`);
 
       // For Facebook: try to immediately fetch the page name using LIST_MANAGED_PAGES
+      // Try multiple approaches since the tool execution can fail silently
       if (toolkit === 'facebook' && accountId) {
         try {
-          console.log(`[COMPOSIO_STATUS_CHECK] Facebook: fetching page name via FACEBOOK_LIST_MANAGED_PAGES`);
-          const pagesResult = await executeComposioTool(FACEBOOK_TOOLS.LIST_PAGES, accountId, {}, composioUserId);
-          const pages = pagesResult?.data?.data || [];
-          if (pages.length > 0 && pages[0].name) {
-            accountName = pages[0].name as string;
-            console.log(`[COMPOSIO_STATUS_CHECK] Facebook: got page name = ${accountName}`);
+          console.log(`[COMPOSIO_STATUS_CHECK] Facebook: fetching page name via FACEBOOK_LIST_MANAGED_PAGES, accountId=${accountId}`);
+
+          // Approach 1: Direct tool execution with composioUserId
+          let pagesResult = await executeComposioTool(FACEBOOK_TOOLS.LIST_PAGES, accountId, {}, composioUserId);
+          let pages = extractDataArray(pagesResult, 'FB_STATUS_PAGES');
+
+          // Approach 2: If no pages found, try without composioUserId (the account ID may be enough)
+          if (pages.length === 0) {
+            console.log(`[COMPOSIO_STATUS_CHECK] Facebook: no pages with composioUserId, trying without userId`);
+            try {
+              pagesResult = await executeComposioTool(FACEBOOK_TOOLS.LIST_PAGES, accountId, {});
+              pages = extractDataArray(pagesResult, 'FB_STATUS_PAGES_NO_USER');
+            } catch (fallbackErr) {
+              console.warn(`[COMPOSIO_STATUS_CHECK] Facebook: fallback LIST_PAGES failed:`, (fallbackErr as Error).message);
+            }
+          }
+
+          // Approach 3: If still no pages, try using the account ID directly from the activeAccount object
+          if (pages.length === 0) {
+            const directId = String(activeAccount.id || activeAccount.connectedAccountId || '');
+            if (directId && directId !== accountId) {
+              console.log(`[COMPOSIO_STATUS_CHECK] Facebook: trying with direct account ID ${directId}`);
+              try {
+                pagesResult = await executeComposioTool(FACEBOOK_TOOLS.LIST_PAGES, directId, {}, composioUserId);
+                pages = extractDataArray(pagesResult, 'FB_STATUS_PAGES_DIRECT');
+              } catch (directErr) {
+                console.warn(`[COMPOSIO_STATUS_CHECK] Facebook: direct ID LIST_PAGES failed:`, (directErr as Error).message);
+              }
+            }
+          }
+
+          if (pages.length > 0) {
+            const pageName = String(
+              pages[0].name || pages[0].page_name || pages[0].username || ''
+            );
+            if (pageName) {
+              accountName = pageName;
+              console.log(`[COMPOSIO_STATUS_CHECK] Facebook: got page name = ${accountName} from ${pages.length} pages`);
+            } else {
+              console.log(`[COMPOSIO_STATUS_CHECK] Facebook: pages returned but no name field. Page keys: ${Object.keys(pages[0]).join(',')}`);
+            }
           } else {
-            console.log(`[COMPOSIO_STATUS_CHECK] Facebook: no pages returned or no name field`);
+            console.log(`[COMPOSIO_STATUS_CHECK] Facebook: no pages returned from any approach`);
           }
         } catch (pageError) {
           console.warn(`[COMPOSIO_STATUS_CHECK] Facebook: could not fetch page name:`, (pageError as Error).message);
+          // Log the full error for debugging
+          console.warn(`[COMPOSIO_STATUS_CHECK] Facebook: page name error details:`, pageError);
         }
       }
 
@@ -366,6 +404,7 @@ const FACEBOOK_TOOLS = {
   SEND_MESSAGE: 'FACEBOOK_SEND_MESSAGE',
   SEND_MEDIA: 'FACEBOOK_SEND_MEDIA_MESSAGE',
   MARK_SEEN: 'FACEBOOK_MARK_MESSAGE_SEEN',
+  GET_MESSENGER_PROFILE: 'FACEBOOK_GET_MESSENGER_PROFILE',
 } as const;
 
 const INSTAGRAM_TOOLS = {
@@ -763,7 +802,9 @@ export async function pollNewMessages(
 
       // Save the first page name to the connection for display in the inbox
       if (pages.length > 0) {
-        const pageName = String(pages[0].name || pages[0].page_name || '');
+        const pageName = String(
+          pages[0].name || pages[0].page_name || pages[0].username || ''
+        );
         const pageId = String(pages[0].id || pages[0].page_id || '');
         if (pageName) {
           try {
@@ -779,7 +820,11 @@ export async function pollNewMessages(
             });
             console.log(`[COMPOSIO_POLL] Saved Facebook page name: ${pageName}`);
           } catch (e) { console.warn('[COMPOSIO_POLL] Could not save page name:', e); }
+        } else {
+          console.log(`[COMPOSIO_POLL] Facebook: pages returned but no name field. Page keys: ${Object.keys(pages[0]).join(',')}`);
         }
+      } else {
+        console.log(`[COMPOSIO_POLL] Facebook: no pages returned from LIST_PAGES`);
       }
 
       for (const page of pages) {
@@ -821,7 +866,10 @@ export async function pollNewMessages(
 
             if (existing) continue;
 
-            const contact = await findOrCreateContact(workspaceId, 'messenger', senderId, senderName);
+            const contact = await findOrCreateContact(workspaceId, 'messenger', senderId, senderName, {
+              connectedAccountId,
+              composioUserId,
+            });
             const conversation = await findOrCreateConversation(workspaceId, contact.id, 'messenger');
 
             await db.message.create({
@@ -896,8 +944,10 @@ export async function pollNewMessages(
 
         // Try to extract participant info from the conversation object itself
         // Instagram conversations often have participants at the conversation level
-        const participants = convo.participants as Array<Record<string, unknown>> | undefined;
         const participantInfo: Record<string, { name: string; username: string }> = {};
+
+        // Approach 1: Extract from participants array
+        const participants = convo.participants as Array<Record<string, unknown>> | undefined;
         if (participants) {
           for (const p of participants) {
             const pid = String(p.id || p.igid || p.user_id || '');
@@ -911,6 +961,56 @@ export async function pollNewMessages(
           console.log(`[COMPOSIO_POLL] Instagram: extracted ${Object.keys(participantInfo).length} participants from convo`);
         }
 
+        // Approach 2: Try to get more detailed participant info via INSTAGRAM_GET_CONVERSATION
+        if (Object.keys(participantInfo).length === 0 || Object.values(participantInfo).every(p => !p.name)) {
+          try {
+            console.log(`[COMPOSIO_POLL] Instagram: fetching detailed conversation via INSTAGRAM_GET_CONVERSATION for ${convoId}`);
+            const detailedConvoResult = await executeComposioTool(INSTAGRAM_TOOLS.GET_CONVERSATION, connectedAccountId, {
+              conversation_id: convoId,
+            }, composioUserId);
+            const detailedConvo = detailedConvoResult as Record<string, unknown>;
+            const detailedData = (detailedConvo?.data as Record<string, unknown>) || detailedConvo;
+            const detailedParticipants = detailedData?.participants as Array<Record<string, unknown>> | undefined;
+
+            if (detailedParticipants && detailedParticipants.length > 0) {
+              for (const p of detailedParticipants) {
+                const pid = String(p.id || p.igid || p.user_id || '');
+                if (pid) {
+                  const extractedName = String(p.name || p.username || p.ig_username || p.full_name || '');
+                  const extractedUsername = String(p.username || p.ig_username || '');
+                  // Only overwrite if we got a better name
+                  if (extractedName && (!participantInfo[pid] || !participantInfo[pid].name)) {
+                    participantInfo[pid] = { name: extractedName, username: extractedUsername };
+                  }
+                }
+              }
+              console.log(`[COMPOSIO_POLL] Instagram: after GET_CONVERSATION, have ${Object.keys(participantInfo).length} participants`);
+            }
+          } catch (convoErr) {
+            console.warn(`[COMPOSIO_POLL] Instagram: GET_CONVERSATION failed for ${convoId}:`, (convoErr as Error).message);
+          }
+        }
+
+        // Approach 3: Try extracting participant info from conversation-level fields like snippet, last_message sender
+        const lastMessage = convo.last_message as Record<string, unknown> | undefined;
+        if (lastMessage) {
+          const lastSender = lastMessage.from as Record<string, unknown> | undefined;
+          const lastSenderId = String(lastMessage.sender_id || lastSender?.id || lastMessage.from_id || '');
+          const lastSenderName = String(lastSender?.name || lastSender?.username || lastMessage.sender_name || lastMessage.from_name || '');
+          if (lastSenderId && lastSenderName && !participantInfo[lastSenderId]?.name) {
+            participantInfo[lastSenderId] = { name: lastSenderName, username: lastSenderName };
+          }
+        }
+
+        // Approach 4: Try extracting from conversation-level sender fields
+        const convoSenderId = String(convo.sender_id || convo.from_id || convo.user_id || '');
+        const convoSenderName = String(convo.sender_name || convo.from_name || convo.username || convo.ig_username || '');
+        if (convoSenderId && convoSenderName && !participantInfo[convoSenderId]?.name) {
+          participantInfo[convoSenderId] = { name: convoSenderName, username: convoSenderName };
+        }
+
+        console.log(`[COMPOSIO_POLL] Instagram: final participant info for convo ${convoId}: ${JSON.stringify(participantInfo)}`);
+
         const msgsResult = await executeComposioTool(INSTAGRAM_TOOLS.LIST_MESSAGES, connectedAccountId, {
           conversation_id: convoId,
         }, composioUserId);
@@ -920,8 +1020,9 @@ export async function pollNewMessages(
           let { senderId, senderName } = extractSenderInfo(msg, 'instagram');
 
           // If sender name is generic, try to get it from the conversation participants
-          if (senderName.startsWith('Contacto instagram') && participantInfo[senderId]) {
+          if (senderName.startsWith('Contacto ') && participantInfo[senderId]) {
             senderName = participantInfo[senderId].name || participantInfo[senderId].username || senderName;
+            console.log(`[COMPOSIO_POLL] Instagram: resolved sender name from participantInfo: "${senderName}" for senderId=${senderId}`);
           }
 
           const content = extractMessageContent(msg);
@@ -941,7 +1042,10 @@ export async function pollNewMessages(
 
           if (existing) continue;
 
-          const contact = await findOrCreateContact(workspaceId, 'instagram', senderId, senderName);
+          const contact = await findOrCreateContact(workspaceId, 'instagram', senderId, senderName, {
+            connectedAccountId,
+            composioUserId,
+          });
           const conversation = await findOrCreateConversation(workspaceId, contact.id, 'instagram');
 
           await db.message.create({
@@ -1016,7 +1120,7 @@ export async function upsertComposioConnection(
       userId,
       accountId: data.accountId,
       accountName: data.accountName,
-      metadata: data.metadata || {},
+      metadata: data.metadata as any || {},
     },
     create: {
       workspaceId,
@@ -1025,7 +1129,7 @@ export async function upsertComposioConnection(
       connected: data.connected,
       accountId: data.accountId,
       accountName: data.accountName,
-      metadata: data.metadata || {},
+      metadata: data.metadata as any || {},
     },
   });
 }
@@ -1034,7 +1138,11 @@ export async function findOrCreateContact(
   workspaceId: string,
   channel: 'messenger' | 'instagram',
   externalId: string,
-  name: string
+  name: string,
+  profileOptions?: {
+    connectedAccountId?: string;
+    composioUserId?: string;
+  }
 ) {
   const existing = await db.contact.findFirst({
     where: {
@@ -1045,9 +1153,25 @@ export async function findOrCreateContact(
     },
   });
 
+  // Determine if the name is "generic" and needs profile enrichment
+  const isGenericName = !name || name === 'Desconocido' || name.startsWith('Contacto ');
+
   if (existing) {
-    // Update name if we have a better one now
-    if (name && name !== 'Desconocido' && !name.startsWith('Contacto ') && existing.nombre !== name) {
+    // If the existing contact has a generic name, try to enrich it with a real profile name
+    if (isGenericName && existing.nombre.startsWith('Contacto ') && profileOptions?.connectedAccountId && externalId) {
+      const realName = await fetchProfileName(channel, externalId, profileOptions.connectedAccountId, profileOptions.composioUserId);
+      if (realName && realName !== existing.nombre) {
+        try {
+          console.log(`[COMPOSIO_CONTACT] Updating ${channel} contact name from "${existing.nombre}" to "${realName}" (profile enrichment)`);
+          return await db.contact.update({
+            where: { id: existing.id },
+            data: { nombre: realName },
+          });
+        } catch { /* silent */ }
+      }
+    }
+    // Update name if we have a better one now (non-generic)
+    if (name && !isGenericName && existing.nombre !== name) {
       try {
         return await db.contact.update({
           where: { id: existing.id },
@@ -1058,18 +1182,78 @@ export async function findOrCreateContact(
     return existing;
   }
 
-  console.log(`[COMPOSIO_CONTACT] Creating new ${channel} contact: name="${name}", externalId=${externalId}`);
+  // For new contacts: if name is generic, try to fetch real profile name before creating
+  let resolvedName = name;
+  if (isGenericName && profileOptions?.connectedAccountId && externalId) {
+    const realName = await fetchProfileName(channel, externalId, profileOptions.connectedAccountId, profileOptions.composioUserId);
+    if (realName) {
+      resolvedName = realName;
+      console.log(`[COMPOSIO_CONTACT] Resolved ${channel} contact name from "${name}" to "${realName}" via profile API`);
+    }
+  }
+
+  console.log(`[COMPOSIO_CONTACT] Creating new ${channel} contact: name="${resolvedName}", externalId=${externalId}`);
 
   return db.contact.create({
     data: {
       workspaceId,
-      nombre: name || `Contacto ${channel}`,
+      nombre: resolvedName || `Contacto ${channel}`,
       fuente: channel,
       ...(channel === 'messenger'
         ? { messengerId: externalId }
         : { instagramId: externalId }),
     },
   });
+}
+
+/**
+ * Fetch a contact's real profile name from Instagram or Messenger API.
+ * Uses INSTAGRAM_GET_MESSENGER_PROFILE for Instagram and FACEBOOK_GET_MESSENGER_PROFILE for Messenger.
+ */
+async function fetchProfileName(
+  channel: 'messenger' | 'instagram',
+  senderId: string,
+  connectedAccountId: string,
+  composioUserId?: string
+): Promise<string | null> {
+  try {
+    const toolSlug = channel === 'instagram'
+      ? INSTAGRAM_TOOLS.GET_MESSENGER_PROFILE
+      : FACEBOOK_TOOLS.GET_MESSENGER_PROFILE;
+
+    console.log(`[COMPOSIO_PROFILE] Fetching profile for ${channel} sender ${senderId} via ${toolSlug}`);
+    const profileResult = await executeComposioTool(toolSlug, connectedAccountId, {
+      recipient_id: senderId,
+      user_id: senderId,
+      psid: senderId,
+    }, composioUserId);
+
+    // Try to extract the name from various response formats
+    const data = profileResult as Record<string, unknown>;
+    const nestedData = data?.data as Record<string, unknown> | undefined;
+    const deepNestedData = nestedData?.data as Record<string, unknown> | undefined;
+
+    const profileName =
+      nestedData?.name ||
+      deepNestedData?.name ||
+      nestedData?.first_name && `${nestedData.first_name} ${nestedData.last_name || ''}`.trim() ||
+      deepNestedData?.first_name && `${deepNestedData.first_name} ${deepNestedData.last_name || ''}`.trim() ||
+      data?.name ||
+      nestedData?.username ||
+      deepNestedData?.username ||
+      null;
+
+    if (profileName) {
+      console.log(`[COMPOSIO_PROFILE] Got profile name for ${channel} sender ${senderId}: "${profileName}"`);
+      return String(profileName);
+    }
+
+    console.log(`[COMPOSIO_PROFILE] No profile name found in response for ${channel} sender ${senderId}. Response keys: ${Object.keys(data).join(',')}`);
+    return null;
+  } catch (error) {
+    console.warn(`[COMPOSIO_PROFILE] Failed to fetch ${channel} profile for sender ${senderId}:`, (error as Error).message);
+    return null;
+  }
 }
 
 export async function findOrCreateConversation(
