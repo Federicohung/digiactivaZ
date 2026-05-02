@@ -68,6 +68,7 @@ export async function POST(request: NextRequest) {
     if (!toolkit) {
       if (triggerSlug.startsWith('FACEBOOK')) toolkit = 'facebook';
       else if (triggerSlug.startsWith('INSTAGRAM')) toolkit = 'instagram';
+      else if (triggerSlug.startsWith('WHATSAPP')) toolkit = 'whatsapp';
       else toolkit = '';
     }
 

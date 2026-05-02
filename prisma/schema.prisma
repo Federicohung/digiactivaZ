@@ -81,6 +81,7 @@ model Contact {
   aiSummary       String?
   instagramId     String?
   messengerId     String?
+  whatsappId      String?
   notas           String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt

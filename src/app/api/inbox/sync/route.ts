@@ -26,11 +26,11 @@ export async function POST(request: NextRequest) {
     const results: { channel: string; synced: number; error?: string }[] = [];
 
     const channelsToSync = channel
-      ? [channel as 'messenger' | 'instagram']
-      : ['messenger', 'instagram'] as const;
+      ? [channel as 'messenger' | 'instagram' | 'whatsapp']
+      : ['messenger', 'instagram', 'whatsapp'] as const;
 
     for (const ch of channelsToSync) {
-      const toolkit: ComposioToolkit = ch === 'messenger' ? 'facebook' : 'instagram';
+      const toolkit: ComposioToolkit = ch === 'messenger' ? 'facebook' : ch === 'whatsapp' ? 'whatsapp' : 'instagram';
 
       // Check if this channel is connected
       const status = await checkIntegrationStatus(

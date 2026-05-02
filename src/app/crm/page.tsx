@@ -1572,7 +1572,7 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
     external: 'Externo',
   }
 
-  const FILTER_TABS = ['all', 'messenger', 'instagram', 'web_chat'] as const
+  const FILTER_TABS = ['all', 'messenger', 'instagram', 'whatsapp', 'web_chat'] as const
   type FilterTab = typeof FILTER_TABS[number]
 
   /* ── State ── */
@@ -1804,6 +1804,7 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
 
   const fbProfile = connectedProfiles.find(p => p.toolkit === 'facebook')
   const igProfile = connectedProfiles.find(p => p.toolkit === 'instagram')
+  const waProfile = connectedProfiles.find(p => p.toolkit === 'whatsapp')
   const hasAnyConnection = connectedProfiles.some(p => p.connected)
 
   /* ── Loading skeleton ── */
@@ -1850,6 +1851,19 @@ function BandejaSection({ token, onNavigate }: { token: string; onNavigate?: (s:
                 <span className="w-1.5 h-1.5 rounded-full bg-gray-300" />
                 <Hash className="w-2.5 h-2.5" />
                 Instagram
+              </span>
+            )}
+            {waProfile?.connected ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 text-[10px] font-medium border border-emerald-100">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                <MessageSquare className="w-2.5 h-2.5" />
+                {waProfile.pageName || waProfile.accountName || 'WhatsApp'}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-50 text-gray-300 text-[10px] font-medium border border-gray-100">
+                <span className="w-1.5 h-1.5 rounded-full bg-gray-300" />
+                <MessageSquare className="w-2.5 h-2.5" />
+                WhatsApp
               </span>
             )}
           </div>
@@ -2518,8 +2532,10 @@ function WorkspacesSection({ token, user, onUserUpdate }: { token: string; user:
 function IntegracionesSection({ token }: { token: string }) {
   const [fbStatus, setFbStatus] = useState<'loading' | 'connected' | 'disconnected'>('loading')
   const [igStatus, setIgStatus] = useState<'loading' | 'connected' | 'disconnected'>('loading')
+  const [waStatus, setWaStatus] = useState<'loading' | 'connected' | 'disconnected'>('loading')
   const [fbAccountName, setFbAccountName] = useState<string | null>(null)
   const [igAccountName, setIgAccountName] = useState<string | null>(null)
+  const [waAccountName, setWaAccountName] = useState<string | null>(null)
   const [connecting, setConnecting] = useState<string | null>(null)
   const [syncing, setSyncing] = useState<string | null>(null)
   const [syncResult, setSyncResult] = useState<{ channel: string; newMessages: number } | null>(null)
@@ -2545,6 +2561,14 @@ function IntegracionesSection({ token }: { token: string }) {
         setIgAccountName(data.accountName || null)
       })
       .catch(() => setIgStatus('disconnected'))
+
+    apiFetch('/api/composio/status?toolkit=whatsapp', token)
+      .then(r => r.json())
+      .then(data => {
+        setWaStatus(data.connected ? 'connected' : 'disconnected')
+        setWaAccountName(data.accountName || null)
+      })
+      .catch(() => setWaStatus('disconnected'))
   }, [token])
 
   // Check status on mount + handle OAuth callback
@@ -2591,7 +2615,7 @@ function IntegracionesSection({ token }: { token: string }) {
     }
   }, [])
 
-  const handleConnect = async (toolkit: 'facebook' | 'instagram') => {
+  const handleConnect = async (toolkit: 'facebook' | 'instagram' | 'whatsapp') => {
     setConnecting(toolkit)
     try {
       const res = await apiFetch('/api/composio/connect', token, {
@@ -2613,7 +2637,7 @@ function IntegracionesSection({ token }: { token: string }) {
           setTimeout(() => { window.location.href = data.authUrl }, 1000)
           return
         }
-        toast.info(`Autoriza tu cuenta de ${toolkit === 'facebook' ? 'Facebook' : 'Instagram'} en la ventana que se abrió`)
+        toast.info(`Autoriza tu cuenta de ${toolkit === 'facebook' ? 'Facebook' : toolkit === 'whatsapp' ? 'WhatsApp' : 'Instagram'} en la ventana que se abrió`)
 
         // Poll for connection
         let attempts = 0
@@ -2627,8 +2651,9 @@ function IntegracionesSection({ token }: { token: string }) {
                 if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
                 pollIntervalRef.current = null
                 if (toolkit === 'facebook') { setFbStatus('connected'); setFbAccountName(statusData.accountName || null) }
+                else if (toolkit === 'whatsapp') { setWaStatus('connected'); setWaAccountName(statusData.accountName || null) }
                 else { setIgStatus('connected'); setIgAccountName(statusData.accountName || null) }
-                toast.success(`${toolkit === 'facebook' ? 'Facebook' : 'Instagram'} conectado exitosamente`)
+                toast.success(`${toolkit === 'facebook' ? 'Facebook' : toolkit === 'whatsapp' ? 'WhatsApp' : 'Instagram'} conectado exitosamente`)
                 setConnecting(null)
               }
             })
@@ -2651,15 +2676,16 @@ function IntegracionesSection({ token }: { token: string }) {
   }
 
   // Explicit verify (calls the status API and tries to fetch page name)
-  const handleVerify = async (toolkit: 'facebook' | 'instagram') => {
+  const handleVerify = async (toolkit: 'facebook' | 'instagram' | 'whatsapp') => {
     setVerifying(toolkit)
     try {
       const res = await apiFetch(`/api/composio/status?toolkit=${toolkit}`, token)
       const data = await res.json()
       if (data.connected) {
         if (toolkit === 'facebook') { setFbStatus('connected'); setFbAccountName(data.accountName || null) }
+        else if (toolkit === 'whatsapp') { setWaStatus('connected'); setWaAccountName(data.accountName || null) }
         else { setIgStatus('connected'); setIgAccountName(data.accountName || null) }
-        toast.success(`${toolkit === 'facebook' ? 'Facebook' : 'Instagram'} está conectado${data.accountName ? ` (${data.accountName})` : ''}`)
+        toast.success(`${toolkit === 'facebook' ? 'Facebook' : toolkit === 'whatsapp' ? 'WhatsApp' : 'Instagram'} está conectado${data.accountName ? ` (${data.accountName})` : ''}`)
 
         // Also try to sync immediately after detecting connection
         try {
@@ -2670,8 +2696,9 @@ function IntegracionesSection({ token }: { token: string }) {
         } catch { /* silent */ }
       } else {
         if (toolkit === 'facebook') { setFbStatus('disconnected'); setFbAccountName(null) }
+        else if (toolkit === 'whatsapp') { setWaStatus('disconnected'); setWaAccountName(null) }
         else { setIgStatus('disconnected'); setIgAccountName(null) }
-        toast.info(`${toolkit === 'facebook' ? 'Facebook' : 'Instagram'} no está conectado`)
+        toast.info(`${toolkit === 'facebook' ? 'Facebook' : toolkit === 'whatsapp' ? 'WhatsApp' : 'Instagram'} no está conectado`)
       }
     } catch {
       toast.error('Error al verificar estado')
@@ -2680,7 +2707,7 @@ function IntegracionesSection({ token }: { token: string }) {
     }
   }
 
-  const handleSync = async (channel: 'messenger' | 'instagram') => {
+  const handleSync = async (channel: 'messenger' | 'instagram' | 'whatsapp') => {
     setSyncing(channel)
     setSyncResult(null)
     try {
@@ -2693,7 +2720,7 @@ function IntegracionesSection({ token }: { token: string }) {
         toast.error(data.error)
       } else if (data.newMessages !== undefined) {
         setSyncResult({ channel, newMessages: data.newMessages })
-        toast.success(`${data.newMessages} mensajes nuevos sincronizados de ${channel === 'messenger' ? 'Facebook' : 'Instagram'}`)
+        toast.success(`${data.newMessages} mensajes nuevos sincronizados de ${channel === 'messenger' ? 'Facebook' : channel === 'whatsapp' ? 'WhatsApp' : 'Instagram'}`)
       } else {
         toast.info(data.message || 'Sincronización completada')
       }
@@ -2727,10 +2754,20 @@ function IntegracionesSection({ token }: { token: string }) {
       toolkit: 'instagram' as const,
       channel: 'instagram' as const,
     },
+    {
+      id: 'whatsapp',
+      name: 'WhatsApp Business',
+      description: 'Conecta tu WhatsApp Business API para gestionar conversaciones.',
+      icon: <MessageSquare className="w-5 h-5" />,
+      color: 'bg-green-50 text-green-500',
+      status: waStatus,
+      accountName: waAccountName,
+      toolkit: 'whatsapp' as const,
+      channel: 'whatsapp' as const,
+    },
   ]
 
   const otherIntegrations = [
-    { id: 'whatsapp', name: 'WhatsApp Business', description: 'Conecta tu WhatsApp Business API.', icon: <MessageSquare className="w-5 h-5" />, color: 'bg-green-50 text-green-500' },
     { id: 'resend', name: 'Email (Resend)', description: 'Envía emails transaccionales y campañas.', icon: <Mail className="w-5 h-5" />, color: 'bg-sky-50 text-sky-500' },
     { id: 'elevenlabs', name: 'Sofía Voice (ElevenLabs)', description: 'Agente de voz IA para atención telefónica.', icon: <Mic className="w-5 h-5" />, color: 'bg-violet-50 text-violet-500' },
   ]
@@ -2739,8 +2776,8 @@ function IntegracionesSection({ token }: { token: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-gray-800">Integraciones</h2>
-        <Button variant="outline" size="sm" className="gap-1 h-7 text-[10px]" onClick={checkStatus} disabled={fbStatus === 'loading' && igStatus === 'loading'}>
-          <RefreshCw className={`w-3 h-3 ${fbStatus === 'loading' || igStatus === 'loading' ? 'animate-spin' : ''}`} /> Verificar estado
+        <Button variant="outline" size="sm" className="gap-1 h-7 text-[10px]" onClick={checkStatus} disabled={fbStatus === 'loading' && igStatus === 'loading' && waStatus === 'loading'}>
+          <RefreshCw className={`w-3 h-3 ${fbStatus === 'loading' || igStatus === 'loading' || waStatus === 'loading' ? 'animate-spin' : ''}`} /> Verificar estado
         </Button>
       </div>
 

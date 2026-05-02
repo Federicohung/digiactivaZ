@@ -28,7 +28,7 @@ export function getComposio(): any {
 
 // ─── Types ───
 
-export type ComposioToolkit = 'facebook' | 'instagram';
+export type ComposioToolkit = 'facebook' | 'instagram' | 'whatsapp';
 
 // ─── Composio User ID Helper ───
 // Uses workspace + user combo for per-workspace isolation
@@ -416,6 +416,18 @@ const INSTAGRAM_TOOLS = {
   GET_MESSENGER_PROFILE: 'INSTAGRAM_GET_MESSENGER_PROFILE',
 } as const;
 
+const WHATSAPP_TOOLS = {
+  SEND_MESSAGE: 'WHATSAPP_SEND_MESSAGE',
+  SEND_REPLY: 'WHATSAPP_SEND_REPLY',
+  SEND_MEDIA: 'WHATSAPP_SEND_MEDIA',
+  SEND_TEMPLATE: 'WHATSAPP_SEND_TEMPLATE_MESSAGE',
+  GET_BUSINESS_PROFILE: 'WHATSAPP_GET_BUSINESS_PROFILE',
+  GET_PHONE_NUMBERS: 'WHATSAPP_GET_PHONE_NUMBERS',
+  GET_MESSAGE_TEMPLATES: 'WHATSAPP_GET_MESSAGE_TEMPLATES',
+  SEND_INTERACTIVE_BUTTONS: 'WHATSAPP_SEND_INTERACTIVE_BUTTONS',
+  SEND_INTERACTIVE_LIST: 'WHATSAPP_SEND_INTERACTIVE_LIST',
+} as const;
+
 // ─── Tool Execution ───
 
 /**
@@ -460,6 +472,7 @@ export async function executeComposioTool(
 const TRIGGER_SLUGS: Record<ComposioToolkit, string[]> = {
   facebook: [],
   instagram: [],
+  whatsapp: [],
 };
 
 export async function listTriggerTypes(toolkit?: ComposioToolkit) {
@@ -508,7 +521,7 @@ export async function setupTriggersForToolkit(
 ) {
   const composioUserId = getComposioUserId(workspaceId, userId);
   const slugs = TRIGGER_SLUGS[toolkit];
-  const results = [];
+  const results: Array<{ slug: string; success: boolean; triggerId?: string; error?: string }> = [];
 
   for (const slug of slugs) {
     try {
@@ -586,7 +599,7 @@ export async function verifyComposioWebhook(params: {
 export async function verifyWebhookSignature(
   signature: string,
   body: string
-): boolean {
+): Promise<boolean> {
   const secret = process.env.COMPOSIO_WEBHOOK_SECRET;
   if (!secret) return false;
 
@@ -607,9 +620,18 @@ export async function verifyWebhookSignature(
 export async function fetchComposioMessages(
   workspaceId: string,
   userId: string,
-  channel: 'messenger' | 'instagram',
+  channel: 'messenger' | 'instagram' | 'whatsapp',
   limit: number = 20
 ) {
+  if (channel === 'whatsapp') {
+    const toolkit: ComposioToolkit = 'whatsapp';
+    const connectedAccountId = await getConnectedAccountId(workspaceId, userId, toolkit);
+    if (!connectedAccountId) throw new Error('No active whatsapp connection found');
+    // WhatsApp doesn't have a "list conversations" endpoint like FB/IG
+    // We rely on polling via webhook or direct message sync
+    return [];
+  }
+
   const connectedAccountId = await getConnectedAccountId(workspaceId, userId, channel === 'messenger' ? 'facebook' : 'instagram');
   if (!connectedAccountId) {
     throw new Error(`No active ${channel} connection found`);
@@ -629,10 +651,23 @@ export async function fetchComposioMessages(
 export async function sendComposioMessage(
   workspaceId: string,
   userId: string,
-  channel: 'messenger' | 'instagram',
+  channel: 'messenger' | 'instagram' | 'whatsapp',
   recipientId: string,
   content: string
 ) {
+  if (channel === 'whatsapp') {
+    const toolkit: ComposioToolkit = 'whatsapp';
+    const connectedAccountId = await getConnectedAccountId(workspaceId, userId, toolkit);
+    if (!connectedAccountId) throw new Error('No active whatsapp connection found');
+    const composioUserId = getComposioUserId(workspaceId, userId);
+    return executeComposioTool(WHATSAPP_TOOLS.SEND_MESSAGE, connectedAccountId, {
+      messaging_product: 'whatsapp',
+      to: recipientId,
+      type: 'text',
+      text: { body: content },
+    }, composioUserId);
+  }
+
   const connectedAccountId = await getConnectedAccountId(workspaceId, userId, channel === 'messenger' ? 'facebook' : 'instagram');
   if (!connectedAccountId) {
     throw new Error(`No active ${channel} connection found`);
@@ -778,9 +813,9 @@ function extractMessageId(msg: Record<string, unknown>): string {
 export async function pollNewMessages(
   workspaceId: string,
   userId: string,
-  channel: 'messenger' | 'instagram'
+  channel: 'messenger' | 'instagram' | 'whatsapp'
 ): Promise<{ newMessages: number; newContacts: number }> {
-  const toolkit: ComposioToolkit = channel === 'messenger' ? 'facebook' : 'instagram';
+  const toolkit: ComposioToolkit = channel === 'messenger' ? 'facebook' : channel === 'whatsapp' ? 'whatsapp' : 'instagram';
   const connectedAccountId = await getConnectedAccountId(workspaceId, userId, toolkit);
   const composioUserId = getComposioUserId(workspaceId, userId);
 
@@ -1080,6 +1115,29 @@ export async function pollNewMessages(
           newMessages++;
         }
       }
+    } else if (channel === 'whatsapp') {
+      console.log(`[COMPOSIO_POLL] WhatsApp: checking for account ${connectedAccountId}`);
+
+      // Try to get the WhatsApp business profile name
+      try {
+        const profileResult = await executeComposioTool(WHATSAPP_TOOLS.GET_BUSINESS_PROFILE, connectedAccountId, {}, composioUserId);
+        const profileData = profileResult as Record<string, unknown>;
+        const nestedData = (profileData?.data as Record<string, unknown>) || {};
+        const profileName = String(nestedData.name || nestedData.business_name || (nestedData.data as Record<string, unknown>)?.name || '');
+        if (profileName && profileName !== 'null') {
+          await upsertComposioConnection(workspaceId, userId, 'whatsapp', {
+            connected: true,
+            accountId: connectedAccountId,
+            accountName: profileName,
+            metadata: { pageName: profileName, source: 'poll' },
+          });
+          console.log(`[COMPOSIO_POLL] Saved WhatsApp profile name: ${profileName}`);
+        }
+      } catch (e) { console.warn('[COMPOSIO_POLL] WhatsApp profile fetch failed:', (e as Error).message); }
+
+      // WhatsApp relies on webhooks for incoming messages, so polling returns 0
+      // The webhook handler at /api/composio/webhook will process incoming WhatsApp messages
+      console.log(`[COMPOSIO_POLL] WhatsApp: incoming messages are handled via webhooks, polling not supported`);
     }
 
     if (newMessages > 0) {
@@ -1136,7 +1194,7 @@ export async function upsertComposioConnection(
 
 export async function findOrCreateContact(
   workspaceId: string,
-  channel: 'messenger' | 'instagram',
+  channel: 'messenger' | 'instagram' | 'whatsapp',
   externalId: string,
   name: string,
   profileOptions?: {
@@ -1149,6 +1207,8 @@ export async function findOrCreateContact(
       workspaceId,
       ...(channel === 'messenger'
         ? { messengerId: externalId }
+        : channel === 'whatsapp'
+        ? { whatsappId: externalId }
         : { instagramId: externalId }),
     },
   });
@@ -1201,6 +1261,8 @@ export async function findOrCreateContact(
       fuente: channel,
       ...(channel === 'messenger'
         ? { messengerId: externalId }
+        : channel === 'whatsapp'
+        ? { whatsappId: externalId }
         : { instagramId: externalId }),
     },
   });
@@ -1211,12 +1273,15 @@ export async function findOrCreateContact(
  * Uses INSTAGRAM_GET_MESSENGER_PROFILE for Instagram and FACEBOOK_GET_MESSENGER_PROFILE for Messenger.
  */
 async function fetchProfileName(
-  channel: 'messenger' | 'instagram',
+  channel: 'messenger' | 'instagram' | 'whatsapp',
   senderId: string,
   connectedAccountId: string,
   composioUserId?: string
 ): Promise<string | null> {
   try {
+    // WhatsApp doesn't have a per-contact profile fetch via this pattern
+    if (channel === 'whatsapp') return null;
+
     const toolSlug = channel === 'instagram'
       ? INSTAGRAM_TOOLS.GET_MESSENGER_PROFILE
       : FACEBOOK_TOOLS.GET_MESSENGER_PROFILE;
@@ -1283,8 +1348,9 @@ export async function findOrCreateConversation(
   });
 }
 
-export function toolkitToChannel(toolkit: string): 'messenger' | 'instagram' | 'external' {
+export function toolkitToChannel(toolkit: string): 'messenger' | 'instagram' | 'whatsapp' | 'external' {
   if (toolkit === 'facebook') return 'messenger';
   if (toolkit === 'instagram') return 'instagram';
+  if (toolkit === 'whatsapp') return 'whatsapp';
   return 'external';
 }
