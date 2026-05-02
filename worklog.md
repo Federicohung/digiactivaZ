@@ -206,3 +206,36 @@ Stage Summary:
 - Modified: src/app/crm/page.tsx (rewrote IntegracionesSection)
 - Deployed to: digiactiva-z.vercel.app
 - All Composio endpoints verified working
+---
+Task ID: 2
+Agent: Main Agent
+Task: Fix Composio integration - buttons don't work, status shows disconnected
+
+Work Log:
+- Analyzed user screenshot showing "Desconectado" for both FB and IG
+- Discovered the ROOT CAUSE: the code used SDK methods that don't exist in Composio SDK v0.8.1
+  - composio.create() → doesn't exist (should be composio.toolkits.authorize())
+  - session.authorize() → doesn't exist (should be composio.toolkits.authorize())
+  - session.toolkits() → doesn't exist (should be composio.connectedAccounts.list())
+  - session.execute() → doesn't exist (should be composio.tools.execute())
+- Tested Composio SDK v0.8.1 API directly and confirmed the correct methods
+- Verified that FB and IG ARE connected in Composio (ACTIVE status with access tokens)
+- Completely rewrote src/lib/composio.ts to use correct v0.8.1 API:
+  - OAuth: composio.toolkits.authorize(userId, toolkitSlug) → ConnectionRequest with redirectUrl
+  - Status: composio.connectedAccounts.list({ userIds, toolkitSlugs, statuses: ['ACTIVE'] })
+  - Execute: composio.tools.execute(slug, { connectedAccountId, ...params })
+  - Triggers: composio.triggers.create(userId, slug)
+  - Added getConnectedAccountId() helper for tool execution
+  - Removed all session-based code (createComposioSession, getOrCreateSession)
+- Updated src/app/api/composio/status/route.ts to use new checkIntegrationStatus signature
+- Updated src/app/api/composio/triggers/route.ts to use new listActiveTriggers signature
+- Built and pushed to GitHub, deployed to Vercel
+- Verified: Facebook shows connected:true, Instagram shows connected:true
+- Connect endpoint returns valid OAuth URL
+
+Stage Summary:
+- ROOT CAUSE: SDK v0.8.1 API mismatch - old methods don't exist
+- FIXED: Complete rewrite of composio.ts with correct v0.8.1 API
+- Status endpoint now correctly shows Facebook and Instagram as connected
+- Both FB and IG were already connected in Composio but the status check was broken
+- Deployed to digiactiva-z.vercel.app
