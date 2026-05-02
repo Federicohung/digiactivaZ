@@ -1,0 +1,52 @@
+{
+  "summary": "Sprint A multi-tenant end-to-end validation. Created /app/backend/tests/test_auth_multitenant.py with 28 pytest cases covering JWT auth (login/me/switch-workspace/403 guards/401 on CRM), Workspaces CRUD + plan→modules recompute + module toggle + integrations status auto-calc + agent-prompts per channel, CRM workspace isolation (founder switch DA↔Pasta leaks 0 contacts), public chat routing by slug (default→DigiActiva, ?workspace=pasta-al-vuelo→Pasta greeting), /api/leads mirror into DigiActiva, migration of Pizzeria-era legacy data, no _id leakage, no password_hash leakage. Final run: 28/28 PASS in 5.4s. Frontend Playwright run validated: founder+pasta login, JWT persistence, sidebar user footer (name/email/FOUNDER & ADMIN badges), workspace-selector dropdown for founder (absent for Pasta — fixed display), module-based nav hiding (Pasta premium NO Workspaces/Integraciones navs), Workspaces page shows both DigiActiva+Pasta with 54 module checkboxes, Integraciones page shows 3 save buttons (WhatsApp/Resend/SOFIA), Agentes IA 3 tabs (web_chat/whatsapp/voice) with distinct content per tab, switch workspace UI reflects switch, logout clears and returns to login form.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/workspaces/{id}/agent-prompts/{channel}", "issue": "Accepts raw dict without Pydantic validation — any shape payload replaces the prompt wholesale."},
+      {"endpoint": "PUT /api/workspaces/{id}/integrations/{key}", "issue": "Same — accepts unvalidated dict; missing rate-limiting on secret writes."},
+      {"endpoint": "PUT /api/workspaces/{id}/integrations/{key}", "issue": "No feature-flag check: a workspace_admin on a plan whose 'integrations' module is disabled (e.g. Pasta premium) can still PUT integration credentials successfully. Frontend hides the nav but backend does not enforce module.enabled."},
+      {"endpoint": "chat.py / workspaces.py / auth.py", "issue": "Each module instantiates a fresh AsyncIOMotorClient on every request via get_db() — reuse a module-level client (see previous iteration's review comment)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Role switch via logout→relogin", "issue": "After logout from founder (on Integraciones section) and login as Pasta admin, the previously rendered Integraciones section content remains visible in the main area even though Pasta's sidebar correctly hides the nav item. Recommend resetting active section to default ('Hoy') on login/logout.", "affected_selectors": ["nav-integraciones"]}
+    ],
+    "design_issues": [
+      {"screen": "Sidebar header", "issues": ["For workspace_admin (Pasta) the sidebar header still reads 'FOUNDER OS' — should say something neutral like 'ACTIVA WORKSPACE' or hide that label when role != founder_admin."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auth_multitenant.py",
+    "/app/test_reports/pytest/auth_mt_results.xml"
+  ],
+  "action_items": [
+    "Enforce plan.modules[key].enabled on PUT integrations/agent-prompts endpoints (e.g., premium workspace cannot PUT sofia/integrations even though they could call the API).",
+    "Reset active CRM section to default on login to avoid showing hidden sections via stale state after role switch.",
+    "Change sidebar header label 'FOUNDER OS' to role-aware label for workspace_admin.",
+    "Add Pydantic models for agent-prompts and integrations PUT payloads (currently raw dict).",
+    "Optional: reuse single Motor client across modules to avoid connection churn."
+  ],
+  "critical_code_review_comments": [
+    "workspaces.py POST /api/workspaces had a latent ObjectId leak: insert_one mutates doc in-place adding ObjectId _id; returning doc directly caused 500. Fixed here by popping _id after insert.",
+    "auth.py verify_password uses bcrypt.checkpw with bare try/except — silent False on any error is OK, but ensure hashes always start with $2b$/$2a$; current seed uses bcrypt.gensalt() so OK.",
+    "workspaces.py update_integration webhook_url uses BACKEND_PUBLIC_URL env that is unset — produces a relative path fallback. Set BACKEND_PUBLIC_URL or derive from request.base_url.",
+    "No rate-limiting on /api/auth/login — brute-force open. Consider 5-fail lockout per IP+email.",
+    "/api/chat/message still has no rate limiting and spawns OpenAI requests per message (flagged in iteration_5).",
+    "CRMPage.js continues to grow (login + WorkspacesSection + IntegrationsSection + AgentConfigSection 3-tab + Sidebar all inline) — split into files."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_auth_multitenant.py (new, 28 pytest cases)",
+    "/app/backend/workspaces.py (fixed ObjectId leak on POST response)",
+    "/app/memory/test_credentials.md (recorded new email+password credentials)"
+  ],
+  "success_rate": {"backend": "100% (28/28)", "frontend": "100% of UI checkpoints pass; 1 minor stale-state UX issue"},
+  "test_credentials": "founder@digiactiva.com / digiactiva2025 (founder_admin); admin@pastaalvuelo.com / pastaalvuelo2025 (workspace_admin)",
+  "seed_data_creation": "Auto-created by backend startup: users (2), workspaces (DigiActiva founder_full, Pasta al Vuelo premium). Tests create TEST_ workspaces (test-ws-<ts>, test-ws-<ts>-2) and TEST_ contacts/leads — benign, not cleaned but prefixed.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: REACT_APP_BACKEND_URL=<env> pytest /app/backend/tests/test_auth_multitenant.py -v. All Sprint A contracts pass. Known backend deviation: module.enabled NOT enforced on integration/agent-prompt endpoints (UI hides nav; API does not). JWT secret in /app/backend/.env. Public chat routing works via ?workspace=<slug>. Migration moved legacy data to DigiActiva on startup. POST /api/workspaces had an ObjectId 500 which I fixed in workspaces.py by popping _id after insert_one. Frontend CRMPage.js testids verified: crm-email-input, crm-password-input, crm-login-btn, workspace-selector, crm-logout, nav-workspaces, nav-integraciones, nav-agente, agent-tab-web_chat, agent-tab-whatsapp, agent-tab-voice, save-whatsapp, save-resend, save-sofia.",
+  "rca of the issue": "Found: POST /api/workspaces returned HTTP 500 ('ObjectId not iterable'). RCA: insert_one mutates the inserted dict in place, adding a BSON ObjectId under _id; handler returned the mutated dict directly so FastAPI's JSON encoder failed. Fix: doc.pop('_id', None) after insert_one before return. Verified 28/28 tests pass after fix."
+}

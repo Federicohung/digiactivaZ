@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration 4: validated 5 new improvements (AI via OpenAI gpt-4o-mini, public-lead → CRM auto-mirror, Hoy UX upgrade, Pipeline totals + 'perdido' column, AI logging in db.crm_ai_logs + timeline 'ia' events). Backend pytest: 28/28 passed (added 7 new tests: TestPublicLeadMirror, TestAILogs x4, TestMetricsExtended, TestTimelineIaType). Frontend: validated greeting, 4 ActivityChips, MetricCards subtitles, AI footer stats (e.g. '12 llamadas IA · 3,089 tokens · ~$0.0012 USD (gpt-4o-mini)'), 6 pipeline columns including 'perdido' with count+value totals, 'Pipeline activo · $150.000' header, fuente in card footer. End-to-end auto-mirror test: POST /api/leads with 'E2E Mirror Test' resulted in the lead appearing in the 'Nuevo' column after page refresh.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Pipeline column header", "issues": ["Stage label e.g. 'Nuevo' is correctly rendered but the value subtitle ($0) is shown ml-4 below the chip — minor alignment quirk on narrow widths; acceptable."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_crm.py",
+    "/app/test_reports/pytest/crm_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "crm.py get_db() still creates a new AsyncIOMotorClient on every request (carryover from iteration 3). Should reuse a module-level singleton (server.py pattern).",
+    "CRMPage.js is now even larger (~1447 lines). Strongly recommend splitting into HoySection.js, PipelineSection.js, ContactsSection.js, ContactDetailModal.js, NewLeadModal.js, SettingsSection.js modules.",
+    "Datetime ISO ↔ datetime conversions are duplicated across 6+ endpoints in crm.py — extract a single _parse_dates(doc) helper.",
+    "server.py POST /api/leads silently swallows the CRM mirror exception (good for UX) but only logs at error level. Consider adding a metric/counter so silent mirror failures don't go unnoticed in production.",
+    "AI generate cost estimation uses a fixed avg of $0.40/1M tokens; differentiate by prompt vs completion tokens for accurate billing display."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_crm.py (added TestPublicLeadMirror, TestAILogs, TestMetricsExtended, TestTimelineIaType)"
+  ],
+  "success_rate": {
+    "backend": "100% (28/28 pytest in 30.25s)",
+    "frontend": "100% (all critical flows verified)"
+  },
+  "test_credentials": "Admin password: digiactiva2025 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "TEST_ prefixed contacts created and cleaned up. One e2e mirror lead created via POST /api/leads and deleted at end of frontend test. AI calls increased crm_ai_logs counter (~17 calls cumulative across iterations).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend tests at /app/backend/tests/test_crm.py now cover 28 cases including new AI-logs/tokens/auto-mirror/extended-metrics/ia-timeline tests. Drag visual feedback (bg-orange-50 ring-2 ring-orange-300 on isHover) is implemented inside the column's inner div (line 477-479 of CRMPage.js) but cannot be verified by Playwright mouse-simulation alone — requires real HTML5 drag events. Implementation is verified by code review. AI Copilot uses gpt-4o-mini directly via AsyncOpenAI (no emergentintegrations).",
+  "rca_of_the_issue": "No bugs found. All 5 improvements are working: (1) gpt-4o-mini AI returning tokens field, (2) public lead auto-mirror creates CRM contact with fuente='formulario' & etapa='nuevo', (3) Hoy shows greeting, chips, AI cost stats, (4) Pipeline shows 6 columns with totals and 'Pipeline activo · $X' subtitle, (5) AI calls logged in db.crm_ai_logs + tipo='ia' timeline events; Pydantic TimelineEvent.tipo Literal accepts 'ia'."
+}

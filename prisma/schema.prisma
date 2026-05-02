@@ -1,0 +1,221 @@
+// DigiActiva - Multi-tenant SaaS Platform
+// Database Schema (SQLite via Prisma)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Users & Auth ───
+model User {
+  id                 String   @id @default(cuid())
+  email              String   @unique
+  passwordHash       String
+  name               String
+  role               String   @default("workspace_admin") // founder_admin | workspace_admin
+  workspaceIds       String   @default("[]") // JSON array of workspace IDs
+  activeWorkspaceId  String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  // Relations
+  workspaces         WorkspaceMember[]
+}
+
+model WorkspaceMember {
+  id          String   @id @default(cuid())
+  userId      String
+  workspaceId String
+  role        String   @default("admin") // admin | member
+  joinedAt    DateTime @default(now())
+
+  user        User      @relation(fields: [userId], references: [id])
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@unique([userId, workspaceId])
+}
+
+// ─── Workspaces (Multi-tenant) ───
+model Workspace {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  plan        String   @default("essential") // essential | premium | elite | founder_full
+  modules     String   @default("{}") // JSON: { chat: true, whatsapp: true, crm: true, inbox: true, voice: false, copilot: false }
+  integrations String  @default("{}") // JSON: { whatsapp: { ... }, resend: { ... } }
+  agentPrompts String  @default("{}") // JSON: { web_chat: { ... }, whatsapp: { ... }, voice: { ... } }
+  metaMensual  String  @default("{}") // JSON: { meta: 0, periodo: "" }
+  branding     String  @default("{}") // JSON: { color, logo_url, nombre_negocio }
+  onboardingCompleted Boolean @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members     WorkspaceMember[]
+  contacts    Contact[]
+  timeline    TimelineEvent[]
+  messages    Message[]
+  chatSessions ChatSession[]
+  conversations Conversation[]
+  aiLogs      AiLog[]
+}
+
+// ─── CRM ───
+model Contact {
+  id              String   @id @default(cuid())
+  workspaceId     String
+  empresa         String?
+  nombre          String
+  telefono        String?
+  email           String?
+  nicho           String?
+  fuente          String   @default("web_chat") // web_chat | whatsapp | manual | messenger | instagram | external
+  etapa           String   @default("nuevo") // nuevo | contactado | calificado | propuesta | negociacion | cerrado
+  valorMensual    Float    @default(0)
+  probabilidadCierre Float @default(0)
+  scoreIa         Float    @default(0)
+  aiSummary       String?
+  instagramId     String?
+  messengerId     String?
+  notas           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workspace       Workspace      @relation(fields: [workspaceId], references: [id])
+  timeline        TimelineEvent[]
+  messages        Message[]
+  conversations   Conversation[]
+  chatSessions    ChatSession[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, etapa])
+}
+
+model TimelineEvent {
+  id          String   @id @default(cuid())
+  workspaceId String
+  contactId   String
+  tipo        String   // nota | mensaje | llamada | etapa_cambiada | ai_summary | email | whatsapp
+  descripcion String
+  metadata    String   @default("{}") // JSON
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  contact     Contact   @relation(fields: [contactId], references: [id])
+
+  @@index([workspaceId, contactId])
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  workspaceId    String
+  contactId      String
+  channel        String   @default("web_chat") // web_chat | whatsapp | messenger | instagram | external
+  direction      String   @default("inbound") // inbound | outbound
+  content        String
+  sessionId      String?
+  conversationId String?
+  metadata       String   @default("{}") // JSON
+  status         String   @default("delivered") // sent | delivered | read | failed
+  createdAt      DateTime @default(now())
+
+  workspace      Workspace    @relation(fields: [workspaceId], references: [id])
+  contact        Contact      @relation(fields: [contactId], references: [id])
+  conversation   Conversation? @relation(fields: [conversationId], references: [id])
+
+  @@index([workspaceId, contactId])
+  @@index([workspaceId, conversationId])
+}
+
+model ChatSession {
+  id          String   @id @default(cuid())
+  workspaceId String
+  contactId   String?
+  messages    String   @default("[]") // JSON array of messages
+  leadData    String   @default("{}") // JSON
+  source      String   @default("web_chat")
+  status      String   @default("active") // active | closed
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  contact     Contact?  @relation(fields: [contactId], references: [id])
+
+  @@index([workspaceId])
+}
+
+model Conversation {
+  id                String   @id @default(cuid())
+  workspaceId       String
+  contactId         String
+  channel           String   @default("web_chat")
+  provider          String   @default("native") // native | composio
+  status            String   @default("open") // open | closed | archived
+  unreadCount       Int      @default(0)
+  lastMessagePreview String?
+  lastMessageAt     DateTime @default(now())
+  assignedToUserId  String?
+  tags              String   @default("[]") // JSON array
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  workspace         Workspace @relation(fields: [workspaceId], references: [id])
+  contact           Contact   @relation(fields: [contactId], references: [id])
+  messages          Message[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, contactId])
+  @@index([workspaceId, lastMessageAt])
+}
+
+model AiLog {
+  id          String   @id @default(cuid())
+  workspaceId String
+  tipo        String   // summary | score | generate | priorities
+  contactId   String?
+  model       String   @default("gpt-4o-mini")
+  tokens      Int      @default(0)
+  contenido   String
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@index([workspaceId])
+}
+
+// ─── Landing Page Leads ───
+model Lead {
+  id              String   @id @default(cuid())
+  workspaceId     String   @default("default")
+  nombre          String
+  email           String
+  telefono        String?
+  servicioInteres String?
+  createdAt       DateTime @default(now())
+
+  // no workspace relation for landing leads
+
+  @@index([workspaceId])
+}
+
+// ─── Global Settings ───
+model GlobalSetting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String @default("{}") // JSON
+}
+
+// ─── Niche Templates ───
+model NicheTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String
+  nicho       String
+  prompts     String   @default("{}") // JSON: { web_chat: { ... }, whatsapp: { ... }, voice: { ... } }
+  modules     String   @default("{}") // JSON
+  createdAt   DateTime @default(now())
+}

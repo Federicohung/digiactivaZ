@@ -1,0 +1,43 @@
+{
+  "timestamp": "2026-04-10T23:02:24.161326",
+  "total_tests": 7,
+  "passed_tests": 7,
+  "success_rate": "100.0%",
+  "test_details": [
+    {
+      "test": "API Root Endpoint",
+      "success": true,
+      "details": "Status: 200, Response: {'message': 'Hello World'}"
+    },
+    {
+      "test": "Create Lead (Contact Form)",
+      "success": true,
+      "details": "Lead created successfully with ID: 5ae0af8a-2544-4956-8e36-95a938bb67e6"
+    },
+    {
+      "test": "Get Leads",
+      "success": true,
+      "details": "Retrieved 2 leads"
+    },
+    {
+      "test": "Lead Validation",
+      "success": true,
+      "details": "Passed 3/3 validation tests"
+    },
+    {
+      "test": "Create Status Check",
+      "success": true,
+      "details": "Status check created successfully"
+    },
+    {
+      "test": "Get Status Checks",
+      "success": true,
+      "details": "Retrieved 1 status checks"
+    },
+    {
+      "test": "CORS Headers",
+      "success": true,
+      "details": "CORS headers present: ['Access-Control-Allow-Origin', 'Access-Control-Allow-Methods', 'Access-Control-Allow-Headers']"
+    }
+  ]
+}

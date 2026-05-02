@@ -1,0 +1,147 @@
+{
+  "theme": "Light",
+  "archetype": "Archetype 4 (Swiss & High-Contrast adapted for Apple-style Premium Tech)",
+  "brand_identity": {
+    "name": "DIGIACTIVA.COM",
+    "concept": "Helping Chilean entrepreneurs and SMBs digitalize, organize, and grow using simple AI and tech solutions.",
+    "core_message": "Digitaliza, ordena y activa tu negocio",
+    "target_audience": "Chilean entrepreneurs, SMBs, small businesses, independent professionals",
+    "primary_goal": "Convert visitors into WhatsApp leads"
+  },
+  "typography": {
+    "heading_font": "Outfit",
+    "body_font": "Figtree",
+    "scale": {
+      "h1": "text-5xl sm:text-6xl+ tracking-tight font-light",
+      "h2": "text-4xl sm:text-5xl tracking-tight font-medium",
+      "h3": "text-2xl sm:text-3xl tracking-tight font-medium",
+      "h4": "text-xl font-medium",
+      "body": "text-base leading-relaxed text-slate-600",
+      "small": "text-sm uppercase tracking-[0.2em] font-medium text-blue-600"
+    },
+    "guidelines": "Avoid default fonts like Inter. Headings must have tight tracking. Emphasize contrast using font weights (e.g., Light vs Medium)."
+  },
+  "colors": {
+    "primary": "#007AFF", 
+    "secondary": "#10B981",
+    "accent": "#0F172A",
+    "background": "#F8FAFC",
+    "surface": "#FFFFFF",
+    "text": {
+      "main": "#0F172A",
+      "muted": "#64748B",
+      "inverse": "#FFFFFF"
+    },
+    "gradients": {
+      "glass_bg": "bg-white/70",
+      "glass_border": "border-white/40",
+      "accent_gradient": "bg-gradient-to-r from-blue-600 to-emerald-500",
+      "subtle_glow": "bg-blue-500/10 blur-3xl"
+    }
+  },
+  "spacing_and_layout": {
+    "padding": "Generous spacing: use py-24 to py-32 for sections, gap-8 to gap-12 for grids.",
+    "grid_system": "Bento grid for services and features. Use Mode A 'Tetris' for dynamic layout.",
+    "container": "Max width 7xl, center-aligned."
+  },
+  "surfaces_and_glassmorphism": {
+    "glass_card": "bg-white/70 backdrop-blur-xl backdrop-saturate-150 border border-white/40 shadow-[0_8px_32px_rgba(0,0,0,0.04)] rounded-3xl",
+    "solid_card": "bg-white border border-slate-100 shadow-sm rounded-2xl",
+    "header_nav": "fixed top-0 w-full z-50 bg-white/70 backdrop-blur-xl border-b border-slate-200/50"
+  },
+  "animations": {
+    "hover": "Subtle -translate-y-1, shadow-lg transition-all duration-300",
+    "scroll": "Smooth scroll enabled (Lenis recommended), staggered entrance animations for grids.",
+    "interactions": "Scale up slightly on button click/press."
+  },
+  "components_strategy": {
+    "buttons": "Rounded-full for main CTAs (Apple style), high contrast. Primary CTA uses gradient or solid dark slate. Secondary uses glass or outline.",
+    "icons": "lucide-react, 1.5 stroke width.",
+    "cards": "Use heavy glassmorphism for pricing, solid cards for minor features.",
+    "charts": "Shadcn charts if data is shown, keeping colors aligned with palette."
+  },
+  "media": {
+    "images": [
+      {
+        "category": "hero_or_general",
+        "url": "https://images.unsplash.com/photo-1770777843445-2a1621b1201d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTN8MHwxfHNlYXJjaHwyfHxtb2Rlcm4lMjBidXNpbmVzcyUyMHBlb3BsZSUyMGxhcHRvcCUyMG9mZmljZXxlbnwwfHx8fDE3NzU4NTgwMTZ8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Modern office, representing SMBs and teams"
+      },
+      {
+        "category": "advisory_or_team",
+        "url": "https://images.unsplash.com/photo-1758691737246-95bf8f09a997?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTN8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBidXNpbmVzcyUyMHBlb3BsZSUyMGxhcHRvcCUyMG9mZmljZXxlbnwwfHx8fDE3NzU4NTgwMTZ8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Two women talking, great for advisory/consulting section"
+      },
+      {
+        "category": "location_context",
+        "url": "https://images.unsplash.com/photo-1763336318415-c63ee2f159da?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2ODh8MHwxfHNlYXJjaHwyfHxzYW50aWFnbyUyMGNoaWxlJTIwc2t5bGluZSUyMGJ1c2luZXNzfGVufDB8fHx8MTc3NTg1ODAxNnww&ixlib=rb-4.1.0&q=85",
+        "description": "Santiago skyline to establish Chilean presence"
+      },
+      {
+        "category": "trust_handshake",
+        "url": "https://images.unsplash.com/photo-1745847768380-2caeadbb3b71?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA3MDR8MHwxfHNlYXJjaHwxfHxoYW5kc2hha2UlMjBidXNpbmVzcyUyMGRlYWx8ZW58MHx8fHwxNzc1ODU4MDI4fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Handshake for the 'Why Digiactiva' or final CTA"
+      }
+    ],
+    "logo": "Text logo 'DIGIACTIVA', sleek tracking, bold weight."
+  },
+  "sections": [
+    {
+      "name": "Header",
+      "description": "Sticky glassmorphism header. Text logo 'DIGIACTIVA'. Links to Pricing, Services, FAQ. CTA: 'Hablemos' (WhatsApp link)."
+    },
+    {
+      "name": "Hero",
+      "description": "Clean, massive typography. 'Digitaliza, ordena y activa tu negocio'. Floating blurred gradient orbs (blue/emerald) in background. Primary CTA 'Inicia tu transformación' (WhatsApp) & Secondary 'Ver planes'. Floating Apple-style UI cards or dashboards nearby."
+    },
+    {
+      "name": "Trust Strip",
+      "description": "Subtle gray logos of generic tech tools (Meta, Google, Shopify, etc.) or benefits '100% Digital', 'Atención en Chile', 'Soporte Continuo'."
+    },
+    {
+      "name": "Services Overview",
+      "description": "4 clean glass cards with icons (Web, Marketing, AI, Ordering) showing the pillars."
+    },
+    {
+      "name": "Pricing Plans",
+      "description": "5 plans side by side. Use horizontal scrolling or heavy bento grid if needed. Middle plan emphasized. Glassmorphism styling."
+    },
+    {
+      "name": "Problem/Solution",
+      "description": "Split layout. Left: Red/Gray tones 'Caos y pérdida de tiempo'. Right: Blue/Green 'Orden, ventas y automatización'. Use Santiago skyline image or modern office image here."
+    },
+    {
+      "name": "Digital Solutions & Advisory",
+      "description": "Combine or stack these sections. Focus on consultative approach. Use 'women talking' image."
+    },
+    {
+      "name": "Digital Advertising & Additional Services",
+      "description": "Bento grid 'Tetris' layout highlighting specific tools like Meta Ads, Google Ads, SEO, etc."
+    },
+    {
+      "name": "How it works",
+      "description": "4 minimal steps, horizontal layout with a connecting line. Apple style crisp numbers."
+    },
+    {
+      "name": "Why Digiactiva",
+      "description": "5 benefits. List format with large typography and hover reveal effects."
+    },
+    {
+      "name": "FAQ",
+      "description": "Shadcn Accordion. Minimalist styling, border-bottom only."
+    },
+    {
+      "name": "Final CTA",
+      "description": "Massive text. Dark slate background or gradient. Big WhatsApp button. '¿Listo para crecer?'"
+    },
+    {
+      "name": "Floating Action Button",
+      "description": "Fixed bottom right WhatsApp icon. Green, glowing."
+    }
+  ],
+  "accessibility": {
+    "testing": "All interactive elements MUST have data-testid attributes.",
+    "contrast": "Ensure white text on gradients has sufficient contrast (shadows if necessary)."
+  },
+  "instructions_to_main_agent": "Use Lucide React for all icons. Strict adherence to Apple-style glassmorphism (backdrop-blur-xl). Never use fully transparent navs without blur. DO NOT USE INTER font. Emphasize spacing (py-24 or py-32 per section). Implement smooth scrolling with Lenis or similar if possible. Build heavily customized clean Shadcn components. The layout should look high-end, uncluttered, and highly trustworthy for Chilean SMBs. Ensure WhatsApp link (https://wa.me/56951107102) is mapped to all primary CTAs and floating buttons."
+}

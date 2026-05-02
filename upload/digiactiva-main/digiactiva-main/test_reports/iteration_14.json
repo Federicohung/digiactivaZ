@@ -1,0 +1,51 @@
+{
+  "summary": "Sprint Composio Triggers — pytest 17/18 PASS (test_composio_triggers_sprint.py). Verified all new endpoints: setup-mine returns {workspace_id, results: {whatsapp, instagram, messenger}, webhook_url} with status='skipped' (no connected_account_id). setup founder: 400 sin workspace_id, 404 con id inválido, 200 con workspace_id válido (pasta-al-vuelo). setup como workspace_admin → 403. /status founder ve todos, workspace_admin solo los suyos (filtra correctamente por workspace_id). /types founder OK (200 con items/count/candidates incluso con API key dummy ya que el código retorna 200 con errors map cuando todas las llamadas fallan), workspace_admin → 403. webhook-subscription GET founder OK / admin 403; POST con http:// → 400, con https:// no crashea (502 esperado por API key dummy). /webhook con body inválido → 401 (HMAC fail) Y persiste el evento en composio_webhook_events con parsed_ok=false, hmac_ok=false, error='HMAC verification failed' (verificado vía GET /webhook-events: marcador único encontrado tras POST). Headers safe: signature/authorization/cookie filtrados correctamente. /webhook-events: founder ve todos, admin filtrado por workspace_id. UN BUG ENCONTRADO: DELETE /triggers/{id} retorna 503 en lugar de 200 cuando COMPOSIO_API_KEY no está configurada — _composio_delete llama a _api_key_async() que raisea HTTPException(503) y propaga, impidiendo que el endpoint actualice DB local y retorne {ok:true}. La spec exige 200 incluso si el id no existe.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "DELETE /api/composio/triggers/{trigger_id}",
+        "issue": "Retorna 503 ('COMPOSIO_API_KEY no configurada') en lugar de 200 cuando la API key no está seteada. La spec dice que founder debe recibir 200 incluso si el id no existe (best-effort delete). Root cause: disable_trigger() llama _composio_delete(path) en un loop; _composio_delete invoca _api_key_async() que raisea HTTPException(503) si no hay key, propagando la excepción antes del update local en db.composio_triggers y del return {ok:true}. Fix: envolver cada `await _composio_delete(path)` en try/except HTTPException: pass (mismo patrón que patch en upsert_webhook_subscription). Ejemplo:\n\nfor path in _versioned_paths(...):\n    try:\n        await _composio_delete(path)\n    except HTTPException:\n        pass  # best-effort\n\nIgual riesgo si Composio retorna 5xx legítimamente: actualmente _composio_delete retorna {ok:false} silenciosamente para 4xx/non-404, pero si _api_key_async() falla nunca llegamos. Una vez fixeado el guard de la API key, el resto ya es best-effort."
+      },
+      {
+        "endpoint": "POST /api/composio/triggers/webhook-subscription",
+        "issue": "Validación de HTTPS permite 'preview.emergentagent.com' como excepción explícita (línea 403). Hardcoded — si el dominio del preview cambia, esta excepción queda obsoleta. Considerar quitar la excepción y exigir HTTPS estricto (todos los preview ya son HTTPS) o moverla a un env var BACKEND_PREVIEW_HOSTS si se quiere mantener flexibilidad."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_composio_triggers_sprint.py",
+    "/app/test_reports/pytest/triggers_sprint.xml"
+  ],
+  "action_items": [
+    "Fix DELETE /api/composio/triggers/{trigger_id}: envolver _composio_delete en try/except HTTPException para que el endpoint sea verdaderamente best-effort y retorne 200 + actualice DB local incluso cuando COMPOSIO_API_KEY no está configurada o Composio responde error.",
+    "(Opcional) Limpiar la excepción hardcodeada 'preview.emergentagent.com' en upsert_webhook_subscription validation."
+  ],
+  "critical_code_review_comments": [
+    "composio_triggers.py disable_trigger (línea 358-359): el loop itera por 4 paths probando v3.1 manage, v3 manage, v3.1 directo, v3 directo — total 4 llamadas DELETE a Composio por cada DELETE local. Si _composio_delete fuera no-raising, esto sería 4 round-trips innecesarios cuando el primero ya respondió 200. Considerar: break al primer 2xx/204.",
+    "composio_triggers.py _setup_triggers_for_workspace: usa cliente Mongo nuevo en cada call (_get_db crea AsyncIOMotorClient cada vez). Esto deja sockets sin cerrar bajo carga. Patrón general en server.py probablemente reutiliza un client global — debería migrarse a importarlo de ahí.",
+    "composio_triggers.py log_webhook_event: la lista safe_headers excluye signatures pero incluye 'webhook-id' y 'webhook-timestamp' que son útiles para debug — bien. Sin embargo no hay límite de tamaño en payload almacenado: un atacante podría POST-ear webhooks con payload gigante (Mongo doc max 16MB). Truncar payload a por ej. 64KB antes de insert.",
+    "composio_triggers.py ensure_webhook_events_indexes: el TTL comentado nunca se aplica. Sin TTL la colección crece indefinidamente. Convertir received_at a datetime real (no ISO string) y crear un índice TTL de 14 días, o ejecutar un job periódico de cleanup.",
+    "composio_channels.py _composio_delete: actualmente NO raisea para 4xx/5xx (solo loggea), excepto por _api_key_async. Esta inconsistencia es la causa raíz del bug DELETE — debería decidirse: o todo no-raising (envolver _api_key_async en try/except dentro de _composio_delete), o todo raising (y los callers manejan). Recomendado: hacer _composio_delete TOTALMENTE no-raising (devuelve {ok:false, error:'no api key'} en lugar de raise) para mantener semántica best-effort.",
+    "composio_triggers.py upsert_webhook_subscription: importa httpx y COMPOSIO_BASE dentro del bucle (línea 427-428) en cada iteración. Mover los imports al top del módulo.",
+    "composio_triggers.py setup_triggers loop: si trigger_resolved da slug=None para un canal, marca skipped y continúa — bien. Pero si _resolve_inbound_slug raisea HTTPException por error de Composio, NO se cachea el error y propaga arriba, abortando el setup completo de los otros canales. Envolver _resolve_inbound_slug call también en try/except y registrar como result['status']='error'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_composio_triggers_sprint.py"
+  ],
+  "success_rate": {"backend": "94% (17/18 pytest)", "frontend": "skipped"},
+  "test_credentials": "founder@digiactiva.com / digiactiva2025; admin@pastaalvuelo.com / pastaalvuelo2025",
+  "seed_data_creation": "Solo eventos webhook efímeros (POST /api/composio/webhook con body inválido) que quedan en composio_webhook_events. Marker único 'sprint14-test-{ts}' por test run.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Sprint Composio Triggers cubierto. Tests en /app/backend/tests/test_composio_triggers_sprint.py — 18 cases. Único fallo: TestDelete.test_founder_delete_unknown_200 (DELETE retorna 503 cuando no hay COMPOSIO_API_KEY). Auto-setup post-OAuth: NO probado en runtime (requiere completar OAuth real); revisión de código confirma que composio_channels.py:491-495 envuelve auto_setup_trigger_for_channel en try/except, y la función misma (composio_triggers.py:465-476) también captura todas las excepciones. Code-path validado por inspección. Webhook persistence VERIFIED: POST /webhook sin firma → 401 Y registra evento con parsed_ok=false, hmac_ok=false, error='HMAC verification failed' en composio_webhook_events; recuperable vía GET /webhook-events. Todas las API key-related errors retornan 502/503 (NUNCA 500) — sin crashes inesperados.",
+  "rca_of_the_issue": {
+    "endpoint": "DELETE /api/composio/triggers/{trigger_id}",
+    "expected": "200 OK con {ok:true, trigger_id:'...'} incluso si COMPOSIO_API_KEY no está configurada o el trigger_id no existe",
+    "observed": "503 con detail='COMPOSIO_API_KEY no configurada...'",
+    "root_cause": "composio_triggers.disable_trigger() llama 'await _composio_delete(path)' en un loop. _composio_delete (composio_channels.py:175-187) invoca _api_key_async() en su primera línea, que a su vez raisea HTTPException(status_code=503) si la API key no está en DB ni env. Esa excepción propaga fuera del loop y aborta el endpoint antes de ejecutar el update local en db.composio_triggers y el return {ok:true}.",
+    "reproduction": "1) Asegurar que COMPOSIO_API_KEY no está configurada (situación actual del entorno preview).\n2) Login como founder.\n3) DELETE /api/composio/triggers/cualquier-id.\n4) Observar 503 en lugar de 200.",
+    "fix": "Opción A (recomendada — punto único de fix): hacer _composio_delete totalmente no-raising:\n\nasync def _composio_delete(path: str) -> dict:\n    try:\n        api_key = await _api_key_async()\n    except HTTPException as e:\n        return {'ok': False, 'error': e.detail}\n    ...\n\nOpción B (en disable_trigger): envolver cada llamada en try/except:\n\nfor path in _versioned_paths(...):\n    try:\n        await _composio_delete(path)\n    except HTTPException:\n        pass\n\nLa Opción A es preferible porque mantiene la semántica 'best-effort' de _composio_delete consistente (ya no raisea para 4xx/5xx, solo loggea) y evita que otros callers tropiecen con el mismo bug en el futuro."
+  }
+}

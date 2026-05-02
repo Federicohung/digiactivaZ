@@ -1,0 +1,47 @@
+{
+  "summary": "Onboarding (create-with-admin) + role enforcement sprint. Backend pytest: 20/20 PASS (test_onboarding_sprint.py). All security checks green: founder-only create-with-admin, 409 slug/email duplicates, 400 invalid email + short password, 403 non-founder. New admin login returns role=workspace_admin with workspace_ids=[new_ws_id] and active_workspace_id correctly set. Module toggle and plan change properly 403 for workspace_admin (require_founder enforced). Agent prompt + WhatsApp integration updates still 200 for workspace_admin. List workspaces: founder sees all (incl. new), pasta_admin only own, new admin only own. Reset-password 200 for founder (autogen 12-char), 403 for non-founder, 404 for user-not-in-workspace. /workspaces/{id}/users founder OK, cross-workspace 403. CRM isolation verified: new admin sees 0 contacts (no DigiActiva leakage). Frontend: founder login → Workspaces page → Crear cliente modal opens with all testids (cw-name/slug/plan-*/admin-email/admin-name/admin-password/template/submit). Submit → CredentialsModal renders with cred-email/cred-password/cred-login_url/cred-copy-all (all OK). New ws-card-{slug} appears in list with ws-users-{slug} button. ClientStatusBar correctly HIDDEN for founder on /crm Hoy and VISIBLE for workspace_admin (admin@pastaalvuelo.com) with all 4 pills (status-agent/whatsapp/sofia/leads) + hoy-probar-agente button. workspace_admin sidebar has NO Workspaces link. Cleaned up 11 leftover test workspaces from DB.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/workspaces/create-with-admin (response.credentials.login_url)", "issue": "login_url is built from BACKEND_PUBLIC_URL env (currently 'https://www.digiactiva.com/crm') — points to the production marketing domain, not the preview/tenant URL. The credentials shown to the founder direct the new admin to a domain that may not be the actual login endpoint. Recommend: use REACT_APP_BACKEND_URL or a per-workspace login_url override."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "WorkspacesSection — DigiActiva user list", "issue": "Clicking ws-users-digiactiva expands to 'Sin usuarios.' even though founder@digiactiva.com is logically its admin. Root cause: founder_admin user document does NOT have 'digiactiva' in its workspace_ids array, so /api/workspaces/{id}/users (which filters {workspace_ids: ws_id}) returns []. Means: no reset-pw-* testid is rendered for the founder under DigiActiva. For newly created clients via create-with-admin the user IS associated and reset-pw-{id} renders correctly (verified flow on backend; UI also renders when test-fe-* card is expanded). Action: either add digiactiva to founder.workspace_ids during seed_admin, or include founder_admin users in list_workspace_users when role=founder_admin.", "selector": "[data-testid='reset-pw-...']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_onboarding_sprint.py",
+    "/app/test_reports/pytest/onboarding_results.xml"
+  ],
+  "action_items": [
+    "Fix credentials.login_url to use the actual tenant-facing CRM URL (preview env or per-workspace override) — currently hardcoded to https://www.digiactiva.com via BACKEND_PUBLIC_URL.",
+    "Decide UX for DigiActiva 'Sin usuarios': either include founder_admin in list_workspace_users response (e.g., always include users with role=founder_admin OR users with active_workspace_id == workspace_id) or backfill founder.workspace_ids to include all workspace ids in seed_admin. Without this, founder cannot self-reset via UI.",
+    "Add startup cleanup or dedicated admin endpoint to purge stale test-* slugs (11 leftovers were present this run; cleaned up by tester)."
+  ],
+  "critical_code_review_comments": [
+    "workspaces.py create_workspace_with_admin: payload.admin.email validation uses only 'has @'. Add proper email regex / use pydantic EmailStr to also reject 'a@b' style invalid forms (currently 'a@b' would pass). Pydantic v2 EmailStr is one-line.",
+    "workspaces.py _generate_password: alphabet length 55 → entropy ≈ 12*log2(55) ≈ 69 bits. OK for first-issue passwords, but document that admins must change on first login (currently no force_password_change flag on user doc).",
+    "workspaces.py reset_user_password: returns plaintext new_password in response. Acceptable since founder-only, but log line at line 605 also logs target email — fine, but ensure logger is not shipping to a 3rd-party telemetry sink at INFO.",
+    "workspaces.py list_workspace_users: filter {workspace_ids: workspace_id} excludes founder_admin from any workspace's user list (founders typically don't have workspace_ids set). Either union with {role:'founder_admin'} or document that founder is intentionally out-of-band.",
+    "workspaces.py create_workspace_with_admin: NOT atomic — if user insert fails after workspace insert succeeds, you have an orphan workspace. Wrap in a transaction or compensating delete on user-insert failure.",
+    "workspaces.py update_workspace: when payload.plan changes, modules baseline is rebuilt from PLAN_MODULES, but the 'enabled' field is reset (only settings preserved). So a custom-enabled module on a previous plan is silently disabled on plan change — usually desired, but worth a comment."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_onboarding_sprint.py"
+  ],
+  "success_rate": {
+    "backend": "100% (20/20 pytest)",
+    "frontend": "95% (full create+credentials+expand flow OK; only DigiActiva user-list 'Sin usuarios' caveat)"
+  },
+  "test_credentials": "founder@digiactiva.com / digiactiva2025; admin@pastaalvuelo.com / pastaalvuelo2025",
+  "seed_data_creation": "Single test workspace+admin created per test run via create-with-admin (test-e2e-{ts} slug, test-admin-{ts}@e2e.com email). Auto-cleaned by fixture (motor delete_one). Also cleaned 11 historical test workspaces left over from prior iterations (slugs starting with test- / containing e2e / test_wa_empty_*).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Onboarding flow fully functional. Backend tests at /app/backend/tests/test_onboarding_sprint.py — 20 cases. data-testids verified: ws-create-toggle, create-client-modal, cw-{name|slug|plan-essential|plan-premium|plan-elite|plan-founder_full|template|admin-email|admin-name|admin-password|submit}, credentials-modal, cred-{email|password|login_url|copy-all|copy-email|copy-password|copy-login_url}, ws-card-{slug}, ws-users-{slug}, reset-pw-{user_id}, client-status-bar, status-{agent|whatsapp|sofia|leads}, hoy-probar-agente. Two non-blocking issues to address: (1) login_url returns marketing domain not preview, (2) DigiActiva workspace shows 'Sin usuarios' because founder lacks workspace_ids entry. Fix per action_items.",
+  "rca_login_url_issue": "BACKEND_PUBLIC_URL env appears to be set to https://www.digiactiva.com (production marketing). create-with-admin builds login_url = BACKEND_PUBLIC_URL.rstrip('/') + '/crm'. Fix: either point BACKEND_PUBLIC_URL at the preview emergent URL, or compute login_url from REACT_APP_BACKEND_URL injected via .env, or accept a per-workspace login_url field.",
+  "rca_sin_usuarios_issue": "list_workspace_users uses {workspace_ids: ws_id} which is empty for founder_admin (founder has no workspace_ids). UI then shows 'Sin usuarios' for DigiActiva. Fix: change query to: $or:[{workspace_ids: ws_id},{role:'founder_admin', active_workspace_id: ws_id}] OR backfill founder.workspace_ids during seed_admin."
+}
