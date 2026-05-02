@@ -239,3 +239,30 @@ Stage Summary:
 - Status endpoint now correctly shows Facebook and Instagram as connected
 - Both FB and IG were already connected in Composio but the status check was broken
 - Deployed to digiactiva-z.vercel.app
+
+---
+Task ID: fix-composio-integration
+Agent: main
+Task: Fix Composio integration - status not updating after OAuth, buttons not working
+
+Work Log:
+- Read all relevant files: composio.ts, callback route, status route, connect route, CRM page
+- Diagnosed root causes:
+  1. checkIntegrationStatus() only checked Composio API, didn't fallback to DB
+  2. Callback route couldn't identify workspace/user when state param was empty
+  3. CRM page didn't read URL params for section navigation from callback redirects
+  4. OAuth popup could be blocked, no fallback
+  5. Poll interval wasn't cleaned up on unmount
+- Fixed composio.ts: Enhanced checkIntegrationStatus() with DB-first check, API fallback to any active account, auto-update DB
+- Fixed callback/route.ts: More robust workspace/user identification from state, DB pending connections, or connectedAccountId
+- Fixed connect/route.ts: Removed duplicate DB save, better error messages
+- Fixed status/route.ts: Simplified, relies on improved checkIntegrationStatus()
+- Fixed CRM page: Read initial section from URL params, handle both old and new callback redirect formats
+- Fixed IntegracionesSection: Better status checking, popup blocker fallback, proper poll interval cleanup, improved error handling
+- Built successfully, pushed to GitHub, deployed to Vercel (READY)
+
+Stage Summary:
+- All 5 files updated and committed
+- Build passes successfully
+- Vercel deployment is LIVE at digiactiva-z.vercel.app
+- Key improvement: Even if Composio callback doesn't reach our server, the status check will now detect the connection via the Composio API and auto-update our DB
