@@ -152,3 +152,30 @@ Stage Summary:
 - OAuth flow works: generates authUrl for user to connect their FB/IG account
 - Webhook endpoint ready for when Composio adds native trigger support
 - User needs to visit the authUrl to connect their accounts before polling can work
+
+---
+Task ID: vercel-env-setup
+Agent: Main Agent
+Task: Configure Vercel environment variables and Composio webhook
+
+Work Log:
+- Used Vercel API (token provided by user) to configure env vars
+- Found COMPOSIO_API_KEY already existed (set by Neon/Composio integration)
+- Added COMPOSIO_WEBHOOK_SECRET to Vercel (production, preview, development)
+- Added JWT_SECRET to Vercel (production, preview, development)
+- Triggered redeployment via Vercel API (deployment dpl_DEPbxjNzxvHC1DAvDYhVYHGKQZNt)
+- Verified all endpoints work with new env vars:
+  - Auth login: ✅ JWT token generated correctly
+  - Inbox summary: ✅ Returns conversations by channel
+  - Composio connect (Facebook): ✅ Returns OAuth URL
+  - Composio connect (Instagram): ✅ Returns OAuth URL
+  - Composio status: ✅ Returns connection status
+  - Webhook endpoint: ✅ Active and responding
+- Composio webhook URL must be set in dashboard (no programmatic API found)
+  URL: https://digiactiva-z.vercel.app/api/composio/webhook
+
+Stage Summary:
+- All Vercel env vars configured: COMPOSIO_API_KEY, COMPOSIO_WEBHOOK_SECRET, JWT_SECRET
+- System fully operational in production
+- Next step for user: Connect Facebook/Instagram accounts via OAuth URLs
+- Webhook URL needs manual registration at https://app.composio.dev → Settings
