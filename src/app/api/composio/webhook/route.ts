@@ -1,27 +1,52 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyWebhookSignature, findOrCreateContact, findOrCreateConversation, toolkitToChannel } from '@/lib/composio';
+import { verifyComposioWebhook, verifyWebhookSignature, findOrCreateContact, findOrCreateConversation, toolkitToChannel } from '@/lib/composio';
 import { db } from '@/lib/db';
 
-// POST /api/composio/webhook — Receive real-time messages from Composio
-// This endpoint should be registered in the Composio dashboard
+// POST /api/composio/webhook — Receive real-time messages from Composio Triggers
+// Composio sends webhook payloads (V1/V2/V3) when trigger events fire
 export async function POST(request: NextRequest) {
   try {
     const body = await request.text();
-    const signature = request.headers.get('x-composio-signature') || 
-                      request.headers.get('x-composio-webhook-signature') ||
-                      request.headers.get('signature') || '';
 
-    // Verify webhook signature
-    const isValid = await verifyWebhookSignature(signature, body);
-    if (!isValid) {
-      console.warn('[COMPOSIO_WEBHOOK_WARN] Invalid signature, processing anyway for initial setup');
-      // During initial setup, we allow unverified webhooks to facilitate testing
-      // In production, you may want to enforce this: return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+    // ─── Try SDK-based verification first (V3 format) ───
+    const webhookId = request.headers.get('webhook-id') || '';
+    const webhookSignature = request.headers.get('webhook-signature') || '';
+    const webhookTimestamp = request.headers.get('webhook-timestamp') || '';
+
+    let verifiedPayload: Record<string, unknown> | null = null;
+
+    if (webhookId && webhookSignature && webhookTimestamp) {
+      // V3 webhook format with proper headers
+      const result = await verifyComposioWebhook({
+        payload: body,
+        signature: webhookSignature,
+        webhookId,
+        webhookTimestamp,
+      });
+
+      if (result.valid && result.parsed) {
+        verifiedPayload = result.parsed;
+      }
     }
 
+    // ─── Fallback: legacy signature verification ───
+    if (!verifiedPayload) {
+      const signature = request.headers.get('x-composio-signature') ||
+                        request.headers.get('x-composio-webhook-signature') || '';
+      const isValid = await verifyWebhookSignature(signature, body);
+
+      if (!isValid && webhookId) {
+        // If V3 headers were present but verification failed, reject
+        console.warn('[COMPOSIO_WEBHOOK_WARN] V3 verification failed, rejecting');
+        return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+      }
+      // For legacy/no-signature webhooks during setup, we allow through with a warning
+    }
+
+    // ─── Parse the payload ───
     let payload: Record<string, unknown>;
     try {
-      payload = JSON.parse(body);
+      payload = verifiedPayload || JSON.parse(body);
     } catch {
       return NextResponse.json(
         { error: 'Invalid JSON payload' },
@@ -31,63 +56,94 @@ export async function POST(request: NextRequest) {
 
     console.log('[COMPOSIO_WEBHOOK] Received payload:', JSON.stringify(payload).substring(0, 500));
 
-    // Extract message data from the webhook payload
-    // Composio webhook format varies by toolkit; handle common patterns
-    const eventType = payload.event_type || payload.eventType || payload.type || '';
-    const toolkit = String(payload.toolkit || payload.app || '').toLowerCase();
+    // ─── Extract message data from Composio Trigger payload ───
+    // V3 format: { triggerSlug, triggerData, connectedAccountId, userId, ... }
+    // V2/V1 format: { event_type, message, data, toolkit, ... }
 
-    // Determine channel from toolkit
+    const triggerSlug = String(payload.triggerSlug || payload.trigger_slug || '');
+    const triggerData = (payload.triggerData || payload.trigger_data || payload.data || {}) as Record<string, unknown>;
+
+    // Determine toolkit from trigger slug (e.g., FACEBOOK_MESSENGER_MESSAGE_RECEIVED -> facebook)
+    let toolkit = String(payload.toolkit || payload.app || '').toLowerCase();
+    if (!toolkit) {
+      if (triggerSlug.startsWith('FACEBOOK')) toolkit = 'facebook';
+      else if (triggerSlug.startsWith('INSTAGRAM')) toolkit = 'instagram';
+      else toolkit = '';
+    }
+
     const channel = toolkitToChannel(toolkit);
 
     // Skip non-message events
-    if (!eventType.toString().includes('message') && !payload.message && !payload.text) {
+    const isMessageEvent = triggerSlug.includes('MESSAGE') ||
+      triggerSlug.includes('message') ||
+      !!payload.message ||
+      !!payload.text ||
+      !!triggerData.message ||
+      !!triggerData.text;
+
+    if (!isMessageEvent) {
       return NextResponse.json({ received: true, skipped: true, reason: 'Not a message event' });
     }
 
-    // Extract message details
-    const messageData = (payload.message || payload.data || payload) as Record<string, unknown>;
+    // ─── Extract message details from trigger data ───
+    const messageData = (triggerData.message || triggerData) as Record<string, unknown>;
+
     const senderId = String(
-      messageData.sender_id || 
-      messageData.from?.id || 
-      messageData.senderId || 
-      messageData.sender?.id || 
+      messageData.sender_id ||
+      messageData.from?.id ||
+      messageData.senderId ||
+      messageData.sender?.id ||
+      triggerData.sender_id ||
       ''
     );
     const senderName = String(
-      messageData.sender_name || 
-      messageData.from?.name || 
-      messageData.senderName || 
-      messageData.sender?.name || 
+      messageData.sender_name ||
+      messageData.from?.name ||
+      messageData.senderName ||
+      messageData.sender?.name ||
+      triggerData.sender_name ||
       'Desconocido'
     );
     const messageContent = String(
-      messageData.message || 
-      messageData.text || 
-      messageData.content || 
+      messageData.message ||
+      messageData.text ||
+      messageData.content ||
+      triggerData.text ||
+      triggerData.content ||
       ''
     );
     const messageId = String(
-      messageData.id || 
-      messageData.message_id || 
-      messageData.mid || 
+      messageData.id ||
+      messageData.message_id ||
+      messageData.mid ||
+      triggerData.message_id ||
       ''
     );
 
-    // Extract workspace ID from payload metadata or use a lookup
-    // Composio webhooks include the connected account's user_id which we set as composioUserId
-    const composioUserId = String(payload.user_id || payload.userId || '');
-    
-    // Parse workspace ID from our composioUserId format: ws_{workspaceId}_user_{userId}
+    // ─── Resolve workspace ───
+    // From V3 payload userId (format: ws_{workspaceId}_user_{userId})
+    // or from connected account metadata
+    const composioUserId = String(payload.userId || payload.user_id || '');
     let workspaceId = '';
     const match = composioUserId.match(/^ws_(.+)_user_(.+)$/);
     if (match) {
       workspaceId = match[1];
     }
 
+    // Fallback: look up workspace from ComposioConnection
+    if (!workspaceId && toolkit) {
+      const connection = await db.composioConnection.findFirst({
+        where: { toolkit, connected: true },
+      });
+      if (connection) {
+        workspaceId = connection.workspaceId;
+      }
+    }
+
     if (!workspaceId || !senderId || !messageContent) {
       console.warn('[COMPOSIO_WEBHOOK_WARN] Missing required fields:', {
-        workspaceId,
-        senderId,
+        workspaceId: workspaceId || 'missing',
+        senderId: senderId || 'missing',
         messageContent: messageContent ? 'present' : 'missing',
       });
       return NextResponse.json(
@@ -95,13 +151,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Find or create contact
+    // ─── Find or create contact ───
     const contact = await findOrCreateContact(workspaceId, channel, senderId, senderName);
 
-    // Find or create conversation
+    // ─── Find or create conversation ───
     const conversation = await findOrCreateConversation(workspaceId, contact.id, channel);
 
-    // Check for duplicate message
+    // ─── Check for duplicate message ───
     if (messageId) {
       const existingMessage = await db.message.findFirst({
         where: {
@@ -119,7 +175,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Create message in our database
+    // ─── Create message in our database ───
     await db.message.create({
       data: {
         workspaceId,
@@ -132,15 +188,15 @@ export async function POST(request: NextRequest) {
           composioMessageId: messageId,
           senderId,
           senderName,
-          eventType,
+          triggerSlug,
           toolkit,
-          raw: payload,
+          source: 'composio_trigger',
         },
         status: 'delivered',
       },
     });
 
-    // Update conversation
+    // ─── Update conversation ───
     await db.conversation.update({
       where: { id: conversation.id },
       data: {
@@ -150,10 +206,28 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    // ─── Create timeline event ───
+    await db.timelineEvent.create({
+      data: {
+        workspaceId,
+        contactId: contact.id,
+        tipo: 'mensaje',
+        descripcion: `Mensaje ${channel} recibido: ${messageContent.substring(0, 80)}`,
+        metadata: {
+          channel,
+          source: 'composio_trigger',
+          triggerSlug,
+          senderId,
+          senderName,
+        },
+      },
+    });
+
     console.log('[COMPOSIO_WEBHOOK] Message saved:', {
       conversationId: conversation.id,
       contactId: contact.id,
       channel,
+      triggerSlug,
       contentLength: messageContent.length,
     });
 
@@ -168,7 +242,7 @@ export async function POST(request: NextRequest) {
 }
 
 // GET /api/composio/webhook — Webhook verification endpoint
-// Composio may send a verification challenge
+// Composio and Meta/Facebook may send verification challenges
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const mode = searchParams.get('hub.mode');
@@ -177,13 +251,13 @@ export async function GET(request: NextRequest) {
 
   // Facebook/Meta webhook verification
   if (mode === 'subscribe' && challenge) {
-    // In a real scenario, you'd verify the verify_token matches your app's verify token
-    console.log('[COMPOSIO_WEBHOOK_VERIFY] Verification request received');
+    console.log('[COMPOSIO_WEBHOOK_VERIFY] Meta verification request received');
     return new NextResponse(challenge, { status: 200 });
   }
 
   return NextResponse.json({
     status: 'ok',
     message: 'Composio webhook endpoint active',
+    version: 'v3',
   });
 }
