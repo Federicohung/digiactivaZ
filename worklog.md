@@ -52,3 +52,36 @@ Stage Summary:
 - Updated triggers route to accept 'whatsapp' toolkit
 - Commit: b8c6c9a pushed to GitHub
 - Incoming messages still handled via polling (the correct approach given Composio limitations)
+
+---
+Task ID: 3
+Agent: Main Agent + Full-stack Developer subagent
+Task: Fix integrations: WhatsApp connect, OpenAI API key, Meta WhatsApp direct, Chat widget
+
+Work Log:
+- Fixed /api/composio/connect/route.ts to accept 'whatsapp' toolkit
+- Fixed /api/composio/status/route.ts to accept 'whatsapp' toolkit
+- Created /src/lib/meta-whatsapp.ts — Direct Meta WhatsApp Business API integration
+  - verifyMetaWebhook, parseWhatsAppWebhook, sendWhatsAppMessage, sendWhatsAppTemplate
+  - markWhatsAppMessageRead, verifyMetaAccessToken, getWhatsAppPhoneNumbers
+- Created /api/whatsapp/webhook/route.ts — Meta webhook receiver (GET verification + POST messages)
+- Created /api/whatsapp/send/route.ts — Send messages via Meta API
+- Created /api/whatsapp/config/route.ts — WhatsApp configuration CRUD (meta/composio modes)
+- Updated /api/crm/settings/route.ts — Accept integrations and openai config updates
+- Updated agent-auto-reply.ts — Support OpenAI API key + Meta WhatsApp direct
+- Updated chat/message/route.ts — Support OpenAI API key
+- Installed openai package (v6.35.0)
+- Updated CRM IntegracionesSection UI:
+  - WhatsApp Business Direct (Meta) configuration form
+  - OpenAI API Key configuration with test connection
+  - Chat Widget embed code section
+  - Moved WhatsApp out of Composio section
+- Build verified, committed, and pushed to GitHub
+- Production verified at digiactiva-z.vercel.app
+
+Stage Summary:
+- Commit: b85f58a "feat: Add WhatsApp Business direct Meta API integration, OpenAI key support, and UI enhancements"
+- New API routes: /api/whatsapp/webhook, /api/whatsapp/send, /api/whatsapp/config
+- WhatsApp can now be connected directly via Meta (no Composio dependency)
+- OpenAI API key can be configured in Integrations section
+- Chat widget embed code available for website embedding
