@@ -30,9 +30,9 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { toolkit, action, triggerId } = body;
 
-    if (!toolkit || !['facebook', 'instagram'].includes(toolkit)) {
+    if (!toolkit || !['facebook', 'instagram', 'whatsapp'].includes(toolkit)) {
       return NextResponse.json(
-        { error: 'Toolkit inválido. Use "facebook" o "instagram"' },
+        { error: 'Toolkit inválido. Use "facebook", "instagram" o "whatsapp"' },
         { status: 400 }
       );
     }

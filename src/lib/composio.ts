@@ -469,10 +469,14 @@ export async function executeComposioTool(
 
 // ─── Triggers ───
 
+// NOTE: Composio does NOT have incoming message triggers for WhatsApp/Facebook/Instagram.
+// Incoming messages are handled via polling (pollNewMessages) or direct Meta webhooks.
+// The only available trigger is WhatsApp message status updates.
+// See: https://request.composio.dev/boards/tools-triggers
 const TRIGGER_SLUGS: Record<ComposioToolkit, string[]> = {
   facebook: [],
   instagram: [],
-  whatsapp: [],
+  whatsapp: ['WHATSAPP_MESSAGE_STATUS_UPDATED_TRIGGER'],
 };
 
 export async function listTriggerTypes(toolkit?: ComposioToolkit) {
