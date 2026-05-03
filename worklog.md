@@ -85,3 +85,26 @@ Stage Summary:
 - WhatsApp can now be connected directly via Meta (no Composio dependency)
 - OpenAI API key can be configured in Integrations section
 - Chat widget embed code available for website embedding
+
+---
+Task ID: 4
+Agent: Main Agent
+Task: Fix web chat not responding + UI not showing changes
+
+Work Log:
+- Identified root cause: chat API requires workspace with slug "demo" in DB, which doesn't exist
+- Also identified: z-ai-web-dev-sdk uses internal proxy (172.25.136.193:8080) not accessible from Vercel
+- Rewrote /api/chat/message/route.ts with fallback mode (in-memory sessions, no DB needed)
+- Created /src/lib/zai.ts — helper that reads ZAI config from env vars (for Vercel) or .z-ai-config file (for local)
+- Updated all API routes to use getZAI() instead of ZAI.create()
+- Added ZAI_BASE_URL, ZAI_API_KEY, ZAI_CHAT_ID, ZAI_TOKEN, ZAI_USER_ID env vars
+- Chat now works locally and responds even without a workspace in DB
+- BUT: ZAI_BASE_URL needs to be set in Vercel to a public gateway URL that Vercel can reach
+- The internal proxy at 172.25.136.193:8080 is NOT accessible from Vercel's servers
+- Committed and pushed: 76c2b84 and a877269
+
+Stage Summary:
+- Chat works in fallback mode (no DB dependency)
+- ZAI SDK helper supports env vars for Vercel deployment
+- BLOCKING: Need ZAI_BASE_URL public gateway URL for Vercel production
+- The user needs to set ZAI_BASE_URL in Vercel environment variables
