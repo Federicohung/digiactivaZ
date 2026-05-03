@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyComposioWebhook, verifyWebhookSignature, findOrCreateContact, findOrCreateConversation, toolkitToChannel } from '@/lib/composio';
+import { handleAutoReply, shouldTriggerAutoReply } from '@/lib/agent-auto-reply';
 import { db } from '@/lib/db';
 
 // POST /api/composio/webhook — Receive real-time messages from Composio Triggers
@@ -231,6 +232,31 @@ export async function POST(request: NextRequest) {
       triggerSlug,
       contentLength: messageContent.length,
     });
+
+    // ─── Trigger auto-reply if applicable ───
+    if (shouldTriggerAutoReply(channel)) {
+      // Fire and forget — don't block the webhook response
+      handleAutoReply({
+        workspaceId,
+        contactId: contact.id,
+        conversationId: conversation.id,
+        channel: channel as 'messenger' | 'instagram' | 'whatsapp',
+        incomingMessage: messageContent,
+        senderId,
+        senderName,
+        composioUserId: composioUserId || undefined,
+      }).then(result => {
+        if (result.replied) {
+          console.log(`[COMPOSIO_WEBHOOK] Auto-reply sent for conversation ${conversation.id}`);
+        } else if (result.skippedReason) {
+          console.log(`[COMPOSIO_WEBHOOK] Auto-reply skipped: ${result.skippedReason}`);
+        } else if (result.error) {
+          console.warn(`[COMPOSIO_WEBHOOK] Auto-reply error: ${result.error}`);
+        }
+      }).catch(err => {
+        console.error('[COMPOSIO_WEBHOOK] Auto-reply failed:', err);
+      });
+    }
 
     return NextResponse.json({ received: true, processed: true });
   } catch (error) {

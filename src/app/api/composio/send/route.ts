@@ -30,9 +30,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!['messenger', 'instagram'].includes(channel)) {
+    if (!['messenger', 'instagram', 'whatsapp'].includes(channel)) {
       return NextResponse.json(
-        { error: 'Canal inválido. Use "messenger" o "instagram"' },
+        { error: 'Canal inválido. Use "messenger", "instagram" o "whatsapp"' },
         { status: 400 }
       );
     }
@@ -70,14 +70,19 @@ export async function POST(request: NextRequest) {
     }
 
     // Get the recipient ID from the contact
-    const recipientId =
-      channel === 'messenger'
-        ? conversation.contact.messengerId
-        : conversation.contact.instagramId;
+    let recipientId: string | null = null;
+    if (channel === 'messenger') {
+      recipientId = conversation.contact.messengerId;
+    } else if (channel === 'instagram') {
+      recipientId = conversation.contact.instagramId;
+    } else if (channel === 'whatsapp') {
+      recipientId = conversation.contact.whatsappId;
+    }
 
     if (!recipientId) {
+      const idField = channel === 'messenger' ? 'messengerId' : channel === 'instagram' ? 'instagramId' : 'whatsappId';
       return NextResponse.json(
-        { error: `Contacto no tiene ${channel === 'messenger' ? 'messengerId' : 'instagramId'} configurado` },
+        { error: `Contacto no tiene ${idField} configurado` },
         { status: 400 }
       );
     }
@@ -86,7 +91,7 @@ export async function POST(request: NextRequest) {
     const composioResult = await sendComposioMessage(
       auth.activeWorkspaceId,
       auth.userId,
-      channel as 'messenger' | 'instagram',
+      channel as 'messenger' | 'instagram' | 'whatsapp',
       recipientId,
       content.trim()
     );
