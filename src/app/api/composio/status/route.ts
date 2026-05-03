@@ -25,9 +25,9 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const toolkit = searchParams.get('toolkit');
 
-    if (!toolkit || !['facebook', 'instagram'].includes(toolkit)) {
+    if (!toolkit || !['facebook', 'instagram', 'whatsapp'].includes(toolkit)) {
       return NextResponse.json(
-        { error: 'Toolkit inválido. Use "facebook" o "instagram"' },
+        { error: 'Toolkit inválido. Use "facebook", "instagram" o "whatsapp"' },
         { status: 400 }
       );
     }

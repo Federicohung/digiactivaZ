@@ -69,7 +69,7 @@ export async function PUT(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { metaMensual } = body;
+    const { metaMensual, integrations, openai } = body;
 
     const workspace = await db.workspace.findUnique({
       where: { id: auth.activeWorkspaceId },
@@ -97,17 +97,56 @@ export async function PUT(request: NextRequest) {
       };
     }
 
+    // Support updating integrations JSON field
+    if (integrations !== undefined) {
+      if (typeof integrations !== 'object' || integrations === null) {
+        return NextResponse.json(
+          { error: 'integrations debe ser un objeto' },
+          { status: 400 }
+        );
+      }
+      // Merge with existing integrations
+      const currentIntegrations = (workspace.integrations as Record<string, unknown>) || {};
+      updateData.integrations = { ...currentIntegrations, ...integrations };
+    }
+
+    // Support updating OpenAI API key via openai shorthand
+    if (openai !== undefined) {
+      if (typeof openai !== 'object' || openai === null) {
+        return NextResponse.json(
+          { error: 'openai debe ser un objeto { apiKey }' },
+          { status: 400 }
+        );
+      }
+      const currentIntegrations = (workspace.integrations as Record<string, unknown>) || {};
+      const currentOpenai = (currentIntegrations.openai as Record<string, unknown>) || {};
+      // If apiKey is masked (contains ••••), keep the existing one
+      const finalApiKey = typeof openai.apiKey === 'string' && openai.apiKey.includes('••••')
+        ? currentOpenai.apiKey || ''
+        : openai.apiKey || '';
+      updateData.integrations = {
+        ...currentIntegrations,
+        openai: {
+          ...currentOpenai,
+          apiKey: finalApiKey,
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    }
+
     const updated = await db.workspace.update({
       where: { id: auth.activeWorkspaceId },
       data: updateData,
     });
 
     const parsedMetaMensual = updated.metaMensual || { meta: 0, periodo: '' };
+    const parsedIntegrations = updated.integrations || {};
 
     return NextResponse.json({
       workspaceId: updated.id,
       name: updated.name,
       metaMensual: parsedMetaMensual,
+      integrations: parsedIntegrations,
     });
   } catch (error) {
     console.error('Error updating CRM settings:', error);

@@ -26,9 +26,9 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { toolkit } = body;
 
-    if (!toolkit || !['facebook', 'instagram'].includes(toolkit)) {
+    if (!toolkit || !['facebook', 'instagram', 'whatsapp'].includes(toolkit)) {
       return NextResponse.json(
-        { error: 'Toolkit inválido. Use "facebook" o "instagram"' },
+        { error: 'Toolkit inválido. Use "facebook", "instagram" o "whatsapp"' },
         { status: 400 }
       );
     }
@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
       authUrl: redirectUrl,
       toolkit: typedToolkit,
       connectedAccountId,
-      message: `Visite la URL para conectar su cuenta de ${typedToolkit === 'facebook' ? 'Facebook' : 'Instagram'}`,
+      message: `Visite la URL para conectar su cuenta de ${typedToolkit === 'facebook' ? 'Facebook' : typedToolkit === 'whatsapp' ? 'WhatsApp' : 'Instagram'}`,
     });
   } catch (error) {
     console.error('[COMPOSIO_CONNECT_ERROR]', error);

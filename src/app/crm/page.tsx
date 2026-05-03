@@ -8,7 +8,8 @@ import {
   TrendingUp, DollarSign, Target, Flame, ArrowRight, Send,
   Sparkles, FileText, Clock, Bot as BotIcon, RefreshCw, Eye,
   Edit2, Trash2, MessageSquare, ExternalLink, Loader2, Check,
-  AlertCircle, Star, Hash, Globe, Mic, ChevronLeft, ArrowUpRight
+  AlertCircle, Star, Hash, Globe, Mic, ChevronLeft, ArrowUpRight,
+  Copy, Key, Code, Zap
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -874,10 +875,11 @@ function PipelineSection({ token }: { token: string }) {
   // Auto-switch to list view on small screens
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 768px)')
-    if (mq.matches) setViewMode('list')
-    const handler = (e: MediaQueryListEvent) => setViewMode(e.matches ? 'list' : 'kanban')
-    mq.addEventListener('change', handler)
-    return () => mq.removeEventListener('change', handler)
+    const handler = (e: MediaQueryListEvent | MediaQueryList) => setViewMode(e.matches ? 'list' : 'kanban')
+    handler(mq)
+    const changeHandler = (e: MediaQueryListEvent) => handler(e)
+    mq.addEventListener('change', changeHandler)
+    return () => mq.removeEventListener('change', changeHandler)
   }, [])
 
   if (loading) return <div className="flex justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-[#0066FF]" /></div>
@@ -2722,6 +2724,35 @@ function IntegracionesSection({ token }: { token: string }) {
   const [verifying, setVerifying] = useState<string | null>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
+  // WhatsApp Meta Direct config state
+  const [waConfig, setWaConfig] = useState<{
+    mode: string | null
+    phoneNumberId: string
+    businessAccountId: string
+    verifyToken: string
+    accessToken: string
+    accountName: string
+    connected: boolean
+    connectionValid?: boolean
+    connectionError?: string
+    webhookUrl: string
+    workspaceSlug: string
+  } | null>(null)
+  const [waConfigLoading, setWaConfigLoading] = useState(true)
+  const [waConfigSaving, setWaConfigSaving] = useState(false)
+  const [waConfigTesting, setWaConfigTesting] = useState(false)
+
+  // OpenAI config state
+  const [openaiKey, setOpenaiKey] = useState('')
+  const [openaiKeySaved, setOpenaiKeySaved] = useState('')
+  const [openaiTesting, setOpenaiTesting] = useState(false)
+  const [openaiSaving, setOpenaiSaving] = useState(false)
+  const [openaiShowKey, setOpenaiShowKey] = useState(false)
+
+  // Chat widget state
+  const [widgetCopied, setWidgetCopied] = useState(false)
+  const [workspaceSlug, setWorkspaceSlug] = useState('demo')
+
   // Check connection status
   const checkStatus = useCallback(() => {
     setFbStatus('loading')
@@ -2751,9 +2782,54 @@ function IntegracionesSection({ token }: { token: string }) {
       .catch(() => setWaStatus('disconnected'))
   }, [token])
 
+  // Load WhatsApp config + settings
+  const loadWaConfig = useCallback(() => {
+    setWaConfigLoading(true)
+    apiFetch('/api/whatsapp/config', token)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.error) {
+          setWaConfig({
+            mode: data.mode,
+            phoneNumberId: data._raw?.phoneNumberId || data.meta?.phoneNumberId || '',
+            businessAccountId: data._raw?.businessAccountId || data.meta?.businessAccountId || '',
+            verifyToken: data._raw?.verifyToken || '',
+            accessToken: data._raw?.accessToken || '',
+            accountName: data.accountName || '',
+            connected: data.connected || false,
+            connectionValid: data.connectionValid,
+            connectionError: data.connectionError,
+            webhookUrl: data.webhookUrl || 'https://digiactiva-z.vercel.app/api/whatsapp/webhook',
+            workspaceSlug: data.workspaceSlug || 'demo',
+          })
+          setWorkspaceSlug(data.workspaceSlug || 'demo')
+        }
+      })
+      .catch(() => {})
+      .finally(() => setWaConfigLoading(false))
+  }, [token])
+
+  // Load OpenAI key
+  const loadOpenAiKey = useCallback(() => {
+    apiFetch('/api/crm/settings', token)
+      .then(r => r.json())
+      .then(data => {
+        if (data.integrations?.openai?.apiKey) {
+          setOpenaiKeySaved(data.integrations.openai.apiKey)
+          setOpenaiKey('••••••••••••••••')
+        }
+        if (data.workspaceId) {
+          setWorkspaceSlug(data.slug || 'demo')
+        }
+      })
+      .catch(() => {})
+  }, [token])
+
   // Check status on mount + handle OAuth callback
   useEffect(() => {
     checkStatus()
+    loadWaConfig()
+    loadOpenAiKey()
 
     const params = new URLSearchParams(window.location.search)
     const integracionesConectado = params.get('integraciones_conectado')
@@ -2762,7 +2838,7 @@ function IntegracionesSection({ token }: { token: string }) {
     const connected = params.get('connected')
 
     if (integracionesConectado) {
-      const name = integracionesConectado === 'facebook' ? 'Facebook' : 'Instagram'
+      const name = integracionesConectado === 'facebook' ? 'Facebook' : integracionesConectado === 'whatsapp' ? 'WhatsApp' : 'Instagram'
       toast.success(`${name} conectado exitosamente`)
       window.history.replaceState({}, '', '/crm')
       setTimeout(checkStatus, 1500)
@@ -2776,7 +2852,7 @@ function IntegracionesSection({ token }: { token: string }) {
       setTimeout(checkStatus, 2000)
       setTimeout(checkStatus, 6000)
     } else if (connected) {
-      toast.success(`${connected === 'facebook' ? 'Facebook' : 'Instagram'} conectado exitosamente`)
+      toast.success(`${connected === 'facebook' ? 'Facebook' : connected === 'whatsapp' ? 'WhatsApp' : 'Instagram'} conectado exitosamente`)
       window.history.replaceState({}, '', '/crm')
       setTimeout(checkStatus, 2000)
     }
@@ -2786,7 +2862,7 @@ function IntegracionesSection({ token }: { token: string }) {
       toast.error(`Error al conectar: ${error}`)
       window.history.replaceState({}, '', '/crm')
     }
-  }, [checkStatus])
+  }, [checkStatus, loadWaConfig, loadOpenAiKey])
 
   // Cleanup
   useEffect(() => {
@@ -2911,6 +2987,101 @@ function IntegracionesSection({ token }: { token: string }) {
     }
   }
 
+  // Save WhatsApp Meta config
+  const handleSaveWaConfig = async () => {
+    setWaConfigSaving(true)
+    try {
+      const res = await apiFetch('/api/whatsapp/config', token, {
+        method: 'PUT',
+        body: JSON.stringify({
+          mode: 'meta',
+          phoneNumberId: waConfig?.phoneNumberId || '',
+          businessAccountId: waConfig?.businessAccountId || '',
+          accessToken: waConfig?.accessToken || '',
+          verifyToken: waConfig?.verifyToken || '',
+          accountName: waConfig?.accountName || '',
+        }),
+      })
+      const data = await res.json()
+      if (data.error) {
+        toast.error(data.error)
+      } else {
+        toast.success(data.message || 'WhatsApp configurado')
+        loadWaConfig()
+      }
+    } catch {
+      toast.error('Error al guardar configuración de WhatsApp')
+    } finally {
+      setWaConfigSaving(false)
+    }
+  }
+
+  // Test WhatsApp connection
+  const handleTestWaConnection = async () => {
+    setWaConfigTesting(true)
+    try {
+      await handleSaveWaConfig()
+    } finally {
+      setWaConfigTesting(false)
+    }
+  }
+
+  // Save OpenAI key
+  const handleSaveOpenAi = async () => {
+    setOpenaiSaving(true)
+    try {
+      await apiFetch('/api/crm/settings', token, {
+        method: 'PUT',
+        body: JSON.stringify({
+          openai: { apiKey: openaiKey },
+        }),
+      })
+      toast.success('API Key de OpenAI guardada')
+      setOpenaiKeySaved(openaiKey)
+      setOpenaiKey('••••••••••••••••')
+    } catch {
+      toast.error('Error al guardar API Key')
+    } finally {
+      setOpenaiSaving(false)
+    }
+  }
+
+  // Test OpenAI connection
+  const handleTestOpenAi = async () => {
+    setOpenaiTesting(true)
+    try {
+      const keyToTest = openaiKey.includes('••••') ? openaiKeySaved : openaiKey
+      if (!keyToTest) {
+        toast.error('No hay API Key para probar')
+        return
+      }
+      const res = await fetch('https://api.openai.com/v1/models', {
+        headers: { 'Authorization': `Bearer ${keyToTest}` },
+      })
+      if (res.ok) {
+        toast.success('Conexión con OpenAI exitosa')
+      } else {
+        const data = await res.json()
+        toast.error(`Error: ${data?.error?.message || 'API Key inválida'}`)
+      }
+    } catch {
+      toast.error('Error al probar conexión con OpenAI')
+    } finally {
+      setOpenaiTesting(false)
+    }
+  }
+
+  // Copy to clipboard
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setWidgetCopied(true)
+      toast.success(`${label} copiado al portapapeles`)
+      setTimeout(() => setWidgetCopied(false), 2000)
+    }).catch(() => {
+      toast.error('Error al copiar')
+    })
+  }
+
   const composioIntegrations = [
     {
       id: 'facebook',
@@ -2934,23 +3105,15 @@ function IntegracionesSection({ token }: { token: string }) {
       toolkit: 'instagram' as const,
       channel: 'instagram' as const,
     },
-    {
-      id: 'whatsapp',
-      name: 'WhatsApp Business',
-      description: 'Conecta tu WhatsApp Business API para gestionar conversaciones.',
-      icon: <MessageSquare className="w-5 h-5" />,
-      color: 'bg-green-50 text-green-500',
-      status: waStatus,
-      accountName: waAccountName,
-      toolkit: 'whatsapp' as const,
-      channel: 'whatsapp' as const,
-    },
   ]
 
   const otherIntegrations = [
     { id: 'resend', name: 'Email (Resend)', description: 'Envía emails transaccionales y campañas.', icon: <Mail className="w-5 h-5" />, color: 'bg-sky-50 text-sky-500' },
     { id: 'elevenlabs', name: 'Sofía Voice (ElevenLabs)', description: 'Agente de voz IA para atención telefónica.', icon: <Mic className="w-5 h-5" />, color: 'bg-violet-50 text-violet-500' },
   ]
+
+  // Chat widget embed code
+  const widgetEmbedCode = `<script src="https://digiactiva-z.vercel.app/widget.js" data-workspace="${workspaceSlug}" async></script>`
 
   return (
     <div className="space-y-4">
@@ -2961,7 +3124,7 @@ function IntegracionesSection({ token }: { token: string }) {
         </Button>
       </div>
 
-      {/* Composio-powered integrations */}
+      {/* Composio-powered integrations (FB + IG) */}
       <div>
         <h3 className="text-[10px] font-medium text-gray-400 mb-2 uppercase tracking-wider">Mensajería vía Composio</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -2984,7 +3147,6 @@ function IntegracionesSection({ token }: { token: string }) {
                       )}
                     </div>
                   </div>
-                  {/* Verificar button */}
                   <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -3046,6 +3208,298 @@ function IntegracionesSection({ token }: { token: string }) {
             </Card>
           ))}
         </div>
+      </div>
+
+      {/* WhatsApp Business Direct (Meta) */}
+      <div>
+        <h3 className="text-[10px] font-medium text-gray-400 mb-2 uppercase tracking-wider">WhatsApp Business (API Directa de Meta)</h3>
+        <Card className="shadow-none border-gray-100">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-9 h-9 rounded-xl bg-green-50 text-green-500 flex items-center justify-center">
+                <MessageSquare className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-xs font-semibold text-gray-800">WhatsApp Business Direct</h3>
+                {waConfigLoading ? (
+                  <Badge variant="outline" className="text-[9px] h-4"><Loader2 className="w-2.5 h-2.5 animate-spin mr-0.5" />Cargando...</Badge>
+                ) : waConfig?.connected && waConfig?.connectionValid ? (
+                  <Badge className="text-[9px] h-4 bg-green-50 text-green-600 border-green-200"><Check className="w-2.5 h-2.5 mr-0.5" />Conectado (Meta)</Badge>
+                ) : waConfig?.mode === 'meta' ? (
+                  <Badge variant="outline" className="text-[9px] h-4 text-amber-500 border-amber-200">Configurado (sin verificar)</Badge>
+                ) : waStatus === 'connected' ? (
+                  <Badge className="text-[9px] h-4 bg-green-50 text-green-600 border-green-200"><Check className="w-2.5 h-2.5 mr-0.5" />Conectado (Composio)</Badge>
+                ) : (
+                  <Badge variant="outline" className="text-[9px] h-4 text-gray-400">No configurado</Badge>
+                )}
+              </div>
+            </div>
+
+            <p className="text-[10px] text-gray-400 mb-3">
+              Conecta directamente con la API de WhatsApp Business de Meta. Requiere una cuenta de WhatsApp Business verificada en Meta Business Suite.
+              {waStatus === 'connected' && ' Ya tienes WhatsApp conectado vía Composio — puedes cambiar a la conexión directa aquí.'}
+            </p>
+
+            {/* Webhook URL info */}
+            <div className="bg-gray-50 rounded-lg p-3 mb-3">
+              <div className="flex items-center justify-between mb-1">
+                <Label className="text-[10px] font-medium text-gray-500">Webhook URL (configurar en Meta)</Label>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-5 w-5 p-0"
+                  onClick={() => copyToClipboard(waConfig?.webhookUrl || 'https://digiactiva-z.vercel.app/api/whatsapp/webhook', 'URL de Webhook')}
+                >
+                  <Copy className="w-3 h-3 text-gray-400" />
+                </Button>
+              </div>
+              <code className="text-[10px] text-gray-600 break-all">{waConfig?.webhookUrl || 'https://digiactiva-z.vercel.app/api/whatsapp/webhook'}</code>
+            </div>
+
+            {/* Configuration form */}
+            <div className="space-y-2.5">
+              <div>
+                <Label className="text-[10px]">Phone Number ID</Label>
+                <Input
+                  className="h-8 text-xs"
+                  placeholder="123456789012345"
+                  value={waConfig?.phoneNumberId || ''}
+                  onChange={e => setWaConfig(prev => prev ? { ...prev, phoneNumberId: e.target.value } : null)}
+                />
+              </div>
+              <div>
+                <Label className="text-[10px]">Business Account ID</Label>
+                <Input
+                  className="h-8 text-xs"
+                  placeholder="123456789012345"
+                  value={waConfig?.businessAccountId || ''}
+                  onChange={e => setWaConfig(prev => prev ? { ...prev, businessAccountId: e.target.value } : null)}
+                />
+              </div>
+              <div>
+                <Label className="text-[10px]">Access Token</Label>
+                <Input
+                  className="h-8 text-xs"
+                  type="password"
+                  placeholder="EAAxxxxxxxxx..."
+                  value={waConfig?.accessToken || ''}
+                  onChange={e => setWaConfig(prev => prev ? { ...prev, accessToken: e.target.value } : null)}
+                />
+              </div>
+              <div>
+                <Label className="text-[10px]">Verify Token (para webhook)</Label>
+                <Input
+                  className="h-8 text-xs"
+                  type="password"
+                  placeholder="Tu token de verificación personalizado"
+                  value={waConfig?.verifyToken || ''}
+                  onChange={e => setWaConfig(prev => prev ? { ...prev, verifyToken: e.target.value } : null)}
+                />
+                <p className="text-[9px] text-gray-400 mt-0.5">Crea un token único y configúralo en Meta Business Suite → WhatsApp → Webhooks</p>
+              </div>
+              <div>
+                <Label className="text-[10px]">Nombre de la cuenta (opcional)</Label>
+                <Input
+                  className="h-8 text-xs"
+                  placeholder="Mi Negocio WhatsApp"
+                  value={waConfig?.accountName || ''}
+                  onChange={e => setWaConfig(prev => prev ? { ...prev, accountName: e.target.value } : null)}
+                />
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <Button
+                  className="bg-[#0066FF] hover:bg-[#0052CC] gap-1.5 h-7 text-[10px] flex-1"
+                  onClick={handleSaveWaConfig}
+                  disabled={waConfigSaving}
+                >
+                  {waConfigSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                  Guardar
+                </Button>
+                <Button
+                  variant="outline"
+                  className="gap-1.5 h-7 text-[10px]"
+                  onClick={handleTestWaConnection}
+                  disabled={waConfigTesting}
+                >
+                  {waConfigTesting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                  Probar conexión
+                </Button>
+              </div>
+
+              {waConfig?.connectionError && (
+                <p className="text-[9px] text-red-500 mt-1">Error: {waConfig.connectionError}</p>
+              )}
+
+              {/* Also show Composio WhatsApp option */}
+              {waStatus !== 'connected' && (
+                <div className="pt-2 border-t border-gray-100">
+                  <p className="text-[9px] text-gray-400 mb-1.5">O conecta vía Composio (OAuth):</p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 h-7 text-[10px]"
+                    onClick={() => handleConnect('whatsapp')}
+                    disabled={!!connecting}
+                  >
+                    {connecting === 'whatsapp' ? (
+                      <><Loader2 className="w-3 h-3 animate-spin" /> Conectando...</>
+                    ) : (
+                      <><ExternalLink className="w-3 h-3" /> Conectar WhatsApp vía Composio</>
+                    )}
+                  </Button>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* IA & Configuración — OpenAI */}
+      <div>
+        <h3 className="text-[10px] font-medium text-gray-400 mb-2 uppercase tracking-wider">IA & Configuración</h3>
+        <Card className="shadow-none border-gray-100">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-500 flex items-center justify-center">
+                <Key className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-xs font-semibold text-gray-800">OpenAI API Key</h3>
+                {openaiKeySaved ? (
+                  <Badge className="text-[9px] h-4 bg-green-50 text-green-600 border-green-200"><Check className="w-2.5 h-2.5 mr-0.5" />Configurada</Badge>
+                ) : (
+                  <Badge variant="outline" className="text-[9px] h-4 text-gray-400">No configurada</Badge>
+                )}
+              </div>
+            </div>
+
+            <p className="text-[10px] text-gray-400 mb-3">
+              Por defecto, la plataforma usa la IA integrada. Si deseas más control, puedes usar tu propia API Key de OpenAI para las respuestas del agente y el chat web.
+            </p>
+
+            <div className="space-y-2.5">
+              <div>
+                <Label className="text-[10px]">API Key de OpenAI</Label>
+                <div className="flex gap-1.5">
+                  <div className="relative flex-1">
+                    <Input
+                      className="h-8 text-xs pr-8"
+                      type={openaiShowKey ? 'text' : 'password'}
+                      placeholder="sk-..."
+                      value={openaiKey}
+                      onChange={e => setOpenaiKey(e.target.value)}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="absolute right-0 top-0 h-8 w-8 p-0"
+                      onClick={() => setOpenaiShowKey(!openaiShowKey)}
+                    >
+                      <Eye className="w-3 h-3 text-gray-400" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <Button
+                  className="bg-[#0066FF] hover:bg-[#0052CC] gap-1.5 h-7 text-[10px] flex-1"
+                  onClick={handleSaveOpenAi}
+                  disabled={openaiSaving || !openaiKey}
+                >
+                  {openaiSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                  Guardar
+                </Button>
+                <Button
+                  variant="outline"
+                  className="gap-1.5 h-7 text-[10px]"
+                  onClick={handleTestOpenAi}
+                  disabled={openaiTesting || !openaiKey}
+                >
+                  {openaiTesting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                  Probar conexión
+                </Button>
+              </div>
+
+              <p className="text-[9px] text-gray-400">
+                La API Key se almacena de forma segura y solo se usa para generar respuestas de IA en tu workspace.
+                Obtén tu API Key en <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-[#0066FF] hover:underline">platform.openai.com</a>
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Chat Widget */}
+      <div>
+        <h3 className="text-[10px] font-medium text-gray-400 mb-2 uppercase tracking-wider">Widget de Chat Web</h3>
+        <Card className="shadow-none border-gray-100">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-9 h-9 rounded-xl bg-sky-50 text-sky-500 flex items-center justify-center">
+                <Globe className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-xs font-semibold text-gray-800">Widget de Chat</h3>
+                <Badge variant="outline" className="text-[9px] h-4 text-sky-500 border-sky-200">Disponible</Badge>
+              </div>
+            </div>
+
+            <p className="text-[10px] text-gray-400 mb-3">
+              Agrega un widget de chat a tu sitio web para que los visitantes puedan comunicarse directamente con tu agente IA.
+            </p>
+
+            {/* Workspace slug */}
+            <div className="bg-gray-50 rounded-lg p-3 mb-3">
+              <Label className="text-[10px] font-medium text-gray-500">Workspace Slug</Label>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <code className="text-xs text-gray-700 font-mono">{workspaceSlug}</code>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-5 w-5 p-0"
+                  onClick={() => copyToClipboard(workspaceSlug, 'Slug')}
+                >
+                  <Copy className="w-3 h-3 text-gray-400" />
+                </Button>
+              </div>
+            </div>
+
+            {/* Embed code */}
+            <div className="bg-gray-900 rounded-lg p-3 mb-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <Label className="text-[10px] font-medium text-gray-400">Código de inserción</Label>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-5 gap-1 text-[9px] text-gray-400 hover:text-white"
+                  onClick={() => copyToClipboard(widgetEmbedCode, 'Código del widget')}
+                >
+                  <Copy className="w-3 h-3" />
+                  {widgetCopied ? 'Copiado!' : 'Copiar'}
+                </Button>
+              </div>
+              <code className="text-[10px] text-green-400 break-all leading-relaxed">
+                {widgetEmbedCode.replace(/</g, '&lt;').replace(/>/g, '&gt;')}
+              </code>
+            </div>
+
+            {/* Preview */}
+            <div className="border border-gray-100 rounded-lg p-3">
+              <Label className="text-[10px] font-medium text-gray-500 mb-2 block">Vista previa</Label>
+              <div className="bg-gray-50 rounded-lg p-4 flex items-center justify-center min-h-[80px]">
+                <div className="text-center">
+                  <div className="w-10 h-10 rounded-full bg-[#0066FF] flex items-center justify-center mx-auto mb-2 shadow-lg">
+                    <MessageCircle className="w-5 h-5 text-white" />
+                  </div>
+                  <p className="text-[10px] text-gray-500">Widget de chat flotante</p>
+                  <p className="text-[9px] text-gray-400">Aparece en la esquina inferior derecha de tu web</p>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Coming soon */}

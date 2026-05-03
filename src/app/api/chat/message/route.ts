@@ -102,19 +102,45 @@ IMPORTANTE: No inventes información. Solo usa lo que el visitante te dice. Resp
     // Append user message
     sessionMessages.push({ role: 'user', content: message.trim() });
 
-    // Call AI
-    const zai = await ZAI.create();
-    const completion = await zai.chat.completions.create({
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...sessionMessages.slice(-20), // Keep last 20 messages for context window
-      ],
-    });
+    // Call AI — check for custom OpenAI key first
+    const workspaceIntegrations = (workspace.integrations as Record<string, any>) || {};
+    const customOpenAiKey = workspaceIntegrations?.openai?.apiKey as string | undefined;
+    let reply = '';
 
-    const reply =
-      completion?.choices?.[0]?.message?.content ||
-      completion?.content ||
-      (typeof completion === 'string' ? completion : '');
+    if (customOpenAiKey && customOpenAiKey.startsWith('sk-')) {
+      // Use OpenAI SDK directly
+      try {
+        const OpenAI = (await import('openai')).default;
+        const openai = new OpenAI({ apiKey: customOpenAiKey });
+        const completion = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...sessionMessages.slice(-20),
+          ],
+        });
+        reply = completion?.choices?.[0]?.message?.content || '';
+      } catch (openaiError) {
+        console.error('[CHAT_OPENAI_ERROR]', openaiError);
+        // Fall through to z-ai
+      }
+    }
+
+    if (!reply) {
+      // Fall back to z-ai-web-dev-sdk
+      const zai = await ZAI.create();
+      const completion = await zai.chat.completions.create({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...sessionMessages.slice(-20), // Keep last 20 messages for context window
+        ],
+      });
+
+      reply =
+        completion?.choices?.[0]?.message?.content ||
+        completion?.content ||
+        (typeof completion === 'string' ? completion : '');
+    }
 
     if (!reply) {
       return NextResponse.json(

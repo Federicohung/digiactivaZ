@@ -14,6 +14,7 @@
 
 import { db } from '@/lib/db';
 import { sendComposioMessage, getConnectedAccountId } from '@/lib/composio';
+import { sendWhatsAppMessage } from '@/lib/meta-whatsapp';
 
 // ─── Types ───
 
@@ -107,7 +108,7 @@ export async function handleAutoReply(params: AutoReplyParams): Promise<AutoRepl
     // 1. Check if agent is globally enabled for this workspace
     const workspace = await db.workspace.findUnique({
       where: { id: workspaceId },
-      select: { agentPrompts: true, name: true },
+      select: { agentPrompts: true, name: true, integrations: true },
     });
 
     if (!workspace) {
@@ -172,22 +173,52 @@ export async function handleAutoReply(params: AutoReplyParams): Promise<AutoRepl
     const fullSystemPrompt = systemPrompt.replace(/\{nombre_negocio\}/g, workspace.name);
 
     // 5. Call AI to generate reply
-    const zai = await import('z-ai-web-dev-sdk').then(m => m.default);
-    const ai = await zai.create();
+    let reply = '';
 
-    const completion = await ai.chat.completions.create({
-      messages: [
-        { role: 'system', content: fullSystemPrompt },
-        ...trimmedContext,
-      ],
-      temperature: 0.7,
-      max_tokens: 500,
-    });
+    // Check if workspace has a custom OpenAI API key
+    const integrations = (workspace.integrations as Record<string, any>) || {};
+    const openaiKey = integrations?.openai?.apiKey as string | undefined;
 
-    const reply =
-      completion?.choices?.[0]?.message?.content ||
-      completion?.content ||
-      (typeof completion === 'string' ? completion : '');
+    if (openaiKey && openaiKey.startsWith('sk-')) {
+      // Use OpenAI SDK directly
+      try {
+        const OpenAI = (await import('openai')).default;
+        const openai = new OpenAI({ apiKey: openaiKey });
+        const completion = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: fullSystemPrompt },
+            ...trimmedContext,
+          ],
+          temperature: 0.7,
+          max_tokens: 500,
+        });
+        reply = completion?.choices?.[0]?.message?.content || '';
+      } catch (openaiError) {
+        console.error('[AUTO_REPLY_OPENAI_ERROR]', openaiError);
+        // Fall through to z-ai
+      }
+    }
+
+    if (!reply) {
+      // Fall back to z-ai-web-dev-sdk
+      const zai = await import('z-ai-web-dev-sdk').then(m => m.default);
+      const ai = await zai.create();
+
+      const completion = await ai.chat.completions.create({
+        messages: [
+          { role: 'system', content: fullSystemPrompt },
+          ...trimmedContext,
+        ],
+        temperature: 0.7,
+        max_tokens: 500,
+      });
+
+      reply =
+        completion?.choices?.[0]?.message?.content ||
+        completion?.content ||
+        (typeof completion === 'string' ? completion : '');
+    }
 
     if (!reply) {
       return { replied: false, error: 'AI returned empty response' };
@@ -214,7 +245,7 @@ export async function handleAutoReply(params: AutoReplyParams): Promise<AutoRepl
         },
       });
     } else {
-      // For Messenger, Instagram, WhatsApp: send via Composio
+      // For Messenger, Instagram, WhatsApp: send via appropriate channel
       try {
         const contact = await db.contact.findUnique({
           where: { id: contactId },
@@ -235,6 +266,80 @@ export async function handleAutoReply(params: AutoReplyParams): Promise<AutoRepl
           return { replied: false, error: `No recipient ID found for ${channel}` };
         }
 
+        // Check if this is a WhatsApp message and workspace has direct Meta integration
+        if (channel === 'whatsapp') {
+          const waConfig = integrations?.whatsapp as Record<string, any> | undefined;
+          if (waConfig?.mode === 'meta' && waConfig.phoneNumberId && waConfig.accessToken) {
+            // Use direct Meta WhatsApp API
+            const result = await sendWhatsAppMessage(
+              waConfig.phoneNumberId,
+              waConfig.accessToken,
+              recipientId,
+              replyText
+            );
+
+            // Save the outbound message
+            await db.message.create({
+              data: {
+                workspaceId,
+                contactId,
+                channel: 'whatsapp',
+                direction: 'outbound',
+                content: replyText,
+                conversationId,
+                metadata: {
+                  source: 'agent_auto_reply',
+                  channel: 'whatsapp',
+                  mode: 'meta',
+                  recipientId,
+                  whatsappMessageId: result.messageId,
+                },
+                status: 'delivered',
+              },
+            });
+
+            // Skip the Composio path for WhatsApp when using Meta direct
+            // Jump to step 7 (update conversation)
+            await db.conversation.update({
+              where: { id: conversationId },
+              data: {
+                lastMessagePreview: replyText.substring(0, 100),
+                lastMessageAt: new Date(),
+              },
+            });
+
+            await db.timelineEvent.create({
+              data: {
+                workspaceId,
+                contactId,
+                tipo: 'mensaje',
+                descripcion: `Respuesta automática (whatsapp/meta): ${replyText.substring(0, 80)}`,
+                metadata: {
+                  channel: 'whatsapp',
+                  mode: 'meta',
+                  source: 'agent_auto_reply',
+                  conversationId,
+                },
+              },
+            });
+
+            await db.aiLog.create({
+              data: {
+                workspaceId,
+                tipo: 'auto_reply',
+                contactId,
+                model: openaiKey ? 'openai' : 'z-ai',
+                tokens: replyText.length,
+                contenido: replyText.substring(0, 500),
+              },
+            });
+
+            console.log(`[AUTO_REPLY] Sent reply via WhatsApp (Meta) for conversation ${conversationId}`);
+            return { replied: true, reply: replyText };
+          }
+        }
+
+        // Fall through to Composio for non-Meta WhatsApp, Messenger, Instagram
         // Get workspace members to find a userId for Composio
         const workspaceMember = await db.workspaceMember.findFirst({
           where: { workspaceId },
@@ -328,7 +433,7 @@ export async function handleAutoReply(params: AutoReplyParams): Promise<AutoRepl
         workspaceId,
         tipo: 'auto_reply',
         contactId,
-        model: 'z-ai',
+        model: openaiKey ? 'openai' : 'z-ai',
         tokens: replyText.length, // Approximate
         contenido: replyText.substring(0, 500),
       },
