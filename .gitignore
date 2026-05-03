@@ -59,4 +59,4 @@ server.log
 # Worklog
 /worklog.md
 # Scripts
-/.zscripts/
+/.zscripts/.z-ai-config

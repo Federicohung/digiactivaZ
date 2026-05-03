@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken, extractBearerToken } from '@/lib/auth';
-import ZAI from 'z-ai-web-dev-sdk';
+import { getZAI } from '@/lib/zai';
 
 async function getAuth(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Generate AI content
-    const zai = await ZAI.create();
+    const zai = await getZAI();
     const systemPrompt = getSystemPrompt(tipo as TipoGeneracion);
     const userPrompt = buildUserPrompt(tipo as TipoGeneracion, context, contact || undefined);
 

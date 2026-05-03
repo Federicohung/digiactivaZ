@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken, extractBearerToken } from '@/lib/auth';
-import ZAI from 'z-ai-web-dev-sdk';
+import { getZAI } from '@/lib/zai';
 
 async function getAuth(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
@@ -100,7 +100,7 @@ ${buildContactSummary(closingContacts, 'En cierre')}
 `.trim();
 
     // Use AI to rank and suggest actions
-    const zai = await ZAI.create();
+    const zai = await getZAI();
 
     const completion = await zai.chat.completions.create({
       messages: [

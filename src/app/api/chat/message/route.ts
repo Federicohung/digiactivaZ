@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import ZAI from 'z-ai-web-dev-sdk';
+import { getZAI } from '@/lib/zai';
 
 // In-memory session store for demo/fallback mode (no DB)
 const demoSessions = new Map<string, Array<{ role: string; content: string }>>();
@@ -77,7 +77,7 @@ async function handleFallbackChat(
   // Call AI
   let reply = '';
   try {
-    const zai = await ZAI.create();
+    const zai = await getZAI();
     const completion = await zai.chat.completions.create({
       messages: [
         { role: 'system', content: DEFAULT_SYSTEM_PROMPT },
@@ -231,7 +231,7 @@ IMPORTANTE: No inventes información. Solo usa lo que el visitante te dice. Resp
 
   if (!reply) {
     try {
-      const zai = await ZAI.create();
+      const zai = await getZAI();
       const completion = await zai.chat.completions.create({
         messages: [
           { role: 'system', content: systemPrompt },
@@ -310,7 +310,7 @@ IMPORTANTE: No inventes información. Solo usa lo que el visitante te dice. Resp
   const visitorMessageCount = sessionMessages.filter(m => m.role === 'user').length;
   if (visitorMessageCount >= 2 && visitorMessageCount % 2 === 0) {
     try {
-      const extractZai = await ZAI.create();
+      const extractZai = await getZAI();
       const extractCompletion = await extractZai.chat.completions.create({
         messages: [
           {
